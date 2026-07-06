@@ -30,6 +30,11 @@ VALUES="${REPO_ROOT}/deploy/brev/values-brev-core.yaml"
 
 GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v24.9.1}"
 NIM_OPERATOR_VERSION="${NIM_OPERATOR_VERSION:-}"   # empty = latest
+# GPU time-slicing: how many schedulable nvidia.com/gpu units each PHYSICAL GPU
+# advertises. Lets all 4 core NIMs (≈4.8 GiB combined) share ONE large card
+# (e.g. a single 96 GiB RTX PRO 6000) instead of claiming a card each. Set to 1
+# to disable time-slicing (then you need one physical GPU per core NIM).
+GPU_TIMESLICING_REPLICAS="${GPU_TIMESLICING_REPLICAS:-8}"
 
 log() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 die() { echo -e "\n\033[1;31mERROR: $*\033[0m" >&2; exit 1; }
@@ -65,17 +70,42 @@ kubectl wait --for=condition=Ready node --all --timeout=180s
 # 2. NVIDIA GPU Operator — exposes nvidia.com/gpu to the scheduler
 #    (driver.enabled=false: reuse the host driver already on the Brev image)
 # -----------------------------------------------------------------------------
-log "Installing NVIDIA GPU Operator (${GPU_OPERATOR_VERSION})"
+log "Installing NVIDIA GPU Operator (${GPU_OPERATOR_VERSION}) with GPU time-slicing x${GPU_TIMESLICING_REPLICAS}"
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia >/dev/null 2>&1 || true
 helm repo update >/dev/null
+
+# The device-plugin reads this ConfigMap to advertise each physical GPU as
+# ${GPU_TIMESLICING_REPLICAS} schedulable nvidia.com/gpu units. Must exist
+# before/at operator install so the plugin picks it up on first start.
+kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: time-slicing-config
+  namespace: gpu-operator
+data:
+  any: |-
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        resources:
+        - name: nvidia.com/gpu
+          replicas: ${GPU_TIMESLICING_REPLICAS}
+EOF
+
 helm upgrade --install gpu-operator nvidia/gpu-operator \
-  -n gpu-operator --create-namespace \
+  -n gpu-operator \
   --version "${GPU_OPERATOR_VERSION}" \
   --set driver.enabled=false \
   --set toolkit.enabled=true \
+  --set devicePlugin.config.name=time-slicing-config \
+  --set devicePlugin.config.default=any \
   --wait --timeout 15m
 
-log "Waiting for nvidia.com/gpu to be advertised on the node"
+log "Waiting for time-sliced nvidia.com/gpu units to be advertised on the node"
 for i in $(seq 1 60); do
   if kubectl get nodes -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}' | grep -qE '[1-9]'; then
     kubectl get nodes -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}'; echo

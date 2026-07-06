@@ -49,12 +49,15 @@ Sources: [`nemo_retriever/helm/README.md`](../../nemo_retriever/helm/README.md),
 
 ## 2. GPU budget (8-GPU single node)
 
-The four core NIMs total only **~4.8 GiB** of weights combined. Two ways to place them:
+The four core NIMs total only **~4.8 GiB** of weights combined, so they fit on a
+single GPU. `bootstrap.sh` configures **GPU time-slicing** by default so one
+physical GPU advertises several schedulable `nvidia.com/gpu` units and hosts all
+four NIMs:
 
 | Layout | GPUs used | When |
 |--------|-----------|------|
-| **1 GPU per core NIM** (this launchable's default) | **4 / 8** | Robust; no device-plugin tuning. Recommended to start. |
-| **All 4 core NIMs on 1 GPU** (time-slicing / MIG) | **1 / 8** | Maximum density; needs GPU Operator time-slicing config. See §5. |
+| **All 4 core NIMs on 1 GPU** via time-slicing (**default**) | **1 / 8** | Best value on a large card (e.g. one 96 GiB RTX PRO 6000). Configured automatically. |
+| **1 GPU per core NIM** | **4 / 8** | Set `GPU_TIMESLICING_REPLICAS=1` before running bootstrap; needs ≥4 physical GPUs. |
 
 Adding optional pieces later (per the [support matrix](../../docs/docs/extraction/prerequisites-support-matrix.md#model-hardware-requirements)):
 
@@ -68,7 +71,8 @@ inside 8 GPUs. **Minimum to run RAG retrieval: 1 GPU.**
 
 ## 3. Prerequisites
 
-- A Brev GPU instance (≥1 GPU; 4+ recommended for the default layout) with the
+- A Brev GPU instance — **one large GPU is enough** (e.g. a single 96 GiB
+  RTX PRO 6000; time-slicing packs all four core NIMs onto it) — with the
   **NVIDIA driver installed** (`nvidia-smi` works) and outbound network to
   `nvcr.io`, `helm.ngc.nvidia.com`, and (for hosted answers) `build.nvidia.com`.
 - An **NGC API key** — <https://org.ngc.nvidia.com/setup/api-keys>. It pulls the
@@ -114,11 +118,13 @@ export NVIDIA_API_KEY=nvapi-xxxxxxxx
 
 ## 5. Variations
 
-**Pack the 4 core NIMs onto 1 GPU (free up GPUs).** Configure GPU time-slicing in
-the GPU Operator so one physical GPU advertises multiple `nvidia.com/gpu`, then
-schedule all core NIMs there. See the
-[NIM Operator GPU-sharing docs](https://docs.nvidia.com/nim-operator/latest/index.html)
-and [deployment-options.md](../../docs/docs/extraction/deployment-options.md).
+**Tune or disable GPU time-slicing.** `bootstrap.sh` advertises
+`GPU_TIMESLICING_REPLICAS` (default **8**) schedulable units per physical GPU via
+a `time-slicing-config` ConfigMap consumed by the GPU Operator device plugin.
+Raise it if you add GPU-needing pods, or set `GPU_TIMESLICING_REPLICAS=1` to give
+each core NIM its own physical GPU (then use a ≥4-GPU instance). Time-slicing
+shares a GPU without memory isolation — fine here because the core NIMs are tiny.
+See the [GPU Operator time-slicing docs](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-sharing.html).
 
 **Host the answer LLM in-cluster (+2 GPUs).** Re-run the last helm step (or
 `helm upgrade`) adding:

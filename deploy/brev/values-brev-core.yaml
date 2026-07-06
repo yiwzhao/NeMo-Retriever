@@ -24,12 +24,12 @@
 # an external OpenAI-compatible endpoint (e.g. build.nvidia.com). Turn them
 # on later per nemo_retriever/helm/README.md.
 #
-# GPU budget: 4 GPUs (one per core NIM) out of the 8 available on a Brev
-# single node. The four core NIMs total only ~4.8 GiB of weights, so you can
-# instead pack all four onto ONE physical GPU with NVIDIA GPU time-slicing /
-# MIG (see README §"Packing the core NIMs onto one GPU"). This file keeps the
-# robust one-GPU-per-NIM default so a fresh cluster works without extra
-# device-plugin configuration.
+# GPU budget: the four core NIMs total only ~4.8 GiB of weights. Each NIMService
+# still requests 1 `nvidia.com/gpu` (nimServiceGpuLimit: 1), but bootstrap.sh
+# enables GPU time-slicing so ONE physical GPU (e.g. a single 96 GiB RTX PRO
+# 6000) advertises several schedulable units and hosts all four — so this runs
+# on 1 GPU by default. Set GPU_TIMESLICING_REPLICAS=1 before bootstrap for the
+# one-physical-GPU-per-NIM layout (needs ≥4 GPUs). See deploy/brev/README.md.
 # -----------------------------------------------------------------------------
 
 # Chart-wide master switch for the NIM sub-stack (NIMCache + NIMService CRs).
