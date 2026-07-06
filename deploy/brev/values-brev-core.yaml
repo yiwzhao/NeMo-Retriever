@@ -1,0 +1,103 @@
+# -----------------------------------------------------------------------------
+# NeMo Retriever — Brev single-node "Core RAG only" Helm override
+# -----------------------------------------------------------------------------
+# Use with the chart at nemo_retriever/helm.
+#
+#   helm upgrade --install retriever ./nemo_retriever/helm \
+#     -n retriever --create-namespace \
+#     -f deploy/brev/values-brev-core.yaml \
+#     --set ngcImagePullSecret.create=true \
+#     --set ngcImagePullSecret.password=$NGC_API_KEY \
+#     --set ngcApiSecret.create=true \
+#     --set ngcApiSecret.password=$NGC_API_KEY
+#
+# Scope deployed by this file (see deploy/brev/README.md for the full map):
+#   * retriever-service        (FastAPI orchestrator)   — CPU only
+#   * page_elements NIM        (layout detection)        — 1 GPU
+#   * table_structure NIM      (table structure)         — 1 GPU
+#   * ocr NIM                  (OCR)                      — 1 GPU
+#   * vlm_embed NIM            (VL embeddings)            — 1 GPU
+#   * vectordb pod (LanceDB)   (index + query)           — CPU only
+#
+# Optional NIMs (reranker, answer LLM, Omni caption, Nemotron Parse,
+# Parakeet ASR) are left OFF — answer generation is expected to run against
+# an external OpenAI-compatible endpoint (e.g. build.nvidia.com). Turn them
+# on later per nemo_retriever/helm/README.md.
+#
+# GPU budget: 4 GPUs (one per core NIM) out of the 8 available on a Brev
+# single node. The four core NIMs total only ~4.8 GiB of weights, so you can
+# instead pack all four onto ONE physical GPU with NVIDIA GPU time-slicing /
+# MIG (see README §"Packing the core NIMs onto one GPU"). This file keeps the
+# robust one-GPU-per-NIM default so a fresh cluster works without extra
+# device-plugin configuration.
+# -----------------------------------------------------------------------------
+
+# Chart-wide master switch for the NIM sub-stack (NIMCache + NIMService CRs).
+nims:
+  enabled: true
+
+# The FastAPI service — no GPU, but CPU/memory hungry. Tune workers down for
+# a shared single node; raise them if you have spare cores.
+service:
+  replicas: 1
+  gpu:
+    enabled: false
+  # Media (audio/video) needs ffmpeg in the container. Off by default; flip to
+  # true only if you will ingest audio/video AND your image allows runtime
+  # package install.
+  installFfmpeg: false
+  resources:
+    requests:
+      cpu: "8"
+      memory: 16Gi
+    limits:
+      cpu: "32"
+      memory: 64Gi
+
+serviceConfig:
+  server:
+    port: 7670
+  pipeline:
+    realtimeWorkers: 16
+    batchWorkers: 32
+  # LanceDB vector store + query path. Requires a resolvable embed endpoint —
+  # satisfied here by the in-cluster vlm_embed NIM below.
+  vectordb:
+    enabled: true
+    lancedbUri: /data/vectordb
+    embedModel: nvidia/llama-nemotron-embed-vl-1b-v2
+  # Answer generation OFF in-cluster. Point /v1/answer at an external LLM by
+  # setting apiBase/model here, or leave disabled and call your own LLM from
+  # the client (the quickstart notebook shows the external-LLM pattern).
+  llm:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# NIM Operator sub-stack. Each core NIM gets its own GPU via nimServiceGpuLimit.
+# Optional NIMs explicitly disabled (defensive — they are already off by default).
+# -----------------------------------------------------------------------------
+nimOperator:
+  # 1 GPU per NIMService unless a per-NIM resources block overrides it.
+  nimServiceGpuLimit: 1
+
+  # --- Core (auto-wired into the service) ---
+  page_elements:
+    enabled: true
+  table_structure:
+    enabled: true
+  ocr:
+    enabled: true
+  vlm_embed:
+    enabled: true
+
+  # --- Optional (kept off for the core-only footprint) ---
+  rerankqa:
+    enabled: false
+  nemotron_parse:
+    enabled: false
+  nemotron_3_nano_omni_30b_a3b_reasoning:
+    enabled: false
+  answer_llm:
+    enabled: false
+  audio:
+    enabled: false

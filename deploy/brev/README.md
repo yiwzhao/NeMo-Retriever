@@ -1,0 +1,157 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# NeMo Retriever on Brev — single-node launchable (Core RAG)
+
+A one-command bootstrap that stands up the **core** NeMo Retriever stack on a
+single Brev GPU node (single-node Kubernetes), plus a notebook that drives the
+running service over its REST API.
+
+Everything on Brev is **single node**, so you are capped at the node's GPUs
+(target: **8 GPUs**). This launchable uses **4 of them** and leaves headroom to
+add the reranker / answer LLM later.
+
+---
+
+## 1. Components & services
+
+NeMo Retriever = a **FastAPI orchestrator** (CPU) + a set of **NVIDIA NIM
+microservices** (GPU), reconciled on Kubernetes by the **NIM Operator**, with a
+**LanceDB** pod for the vector index. Mapping the RAG stages to services:
+
+| Stage | Service / component | GPU? | In this launchable |
+|-------|--------------------|------|--------------------|
+| **Orchestration** | `retriever-service` (FastAPI + Ray workers) | ❌ CPU (CPU/RAM heavy) | ✅ |
+| **Ingestion → extract** | `page-elements` NIM (layout) | ✅ | ✅ core |
+| | `table-structure` NIM | ✅ | ✅ core |
+| | `ocr` NIM | ✅ | ✅ core |
+| **Embedding** | `vlm_embed` NIM (`llama-nemotron-embed-vl-1b-v2`) | ✅ | ✅ core |
+| **Indexing** | LanceDB `vectordb` pod (+ PVC) | ❌ CPU | ✅ core |
+| **Query / retrieval** | `/v1/query` on the service → embeds query (vlm_embed) → LanceDB search | ✅ (reuses embed NIM) | ✅ core |
+| **Reranking** | `rerankqa` NIM (`llama-nemotron-rerank-vl-1b-v2`) | ✅ | ⛔ optional (off) |
+| **Answer / LLM serving** | `answer_llm` NIM (Super-49B) **or** external API | ✅✅ (2 GPU) / — | ⛔ external by default |
+| Audio/video | `audio` Parakeet ASR NIM | ✅ | ⛔ optional (off) |
+| Captioning | Omni 30B NIM | ✅ | ⛔ optional (off) |
+| Alt. PDF parse | `nemotron_parse` NIM | ✅ | ⛔ optional (off) |
+
+> **LLM serving is not part of the Retriever core.** Retrieval returns chunks;
+> generation is a separate concern. This launchable expects you to call an
+> external OpenAI-compatible LLM (e.g. build.nvidia.com) from the client — the
+> notebook shows the pattern. You can instead host it in-cluster (see below),
+> which costs ~2 GPUs.
+
+Sources: [`nemo_retriever/helm/README.md`](../../nemo_retriever/helm/README.md),
+[`docs/docs/extraction/prerequisites-support-matrix.md`](../../docs/docs/extraction/prerequisites-support-matrix.md),
+[`docs/docs/extraction/deployment-options.md`](../../docs/docs/extraction/deployment-options.md).
+
+## 2. GPU budget (8-GPU single node)
+
+The four core NIMs total only **~4.8 GiB** of weights combined. Two ways to place them:
+
+| Layout | GPUs used | When |
+|--------|-----------|------|
+| **1 GPU per core NIM** (this launchable's default) | **4 / 8** | Robust; no device-plugin tuning. Recommended to start. |
+| **All 4 core NIMs on 1 GPU** (time-slicing / MIG) | **1 / 8** | Maximum density; needs GPU Operator time-slicing config. See §5. |
+
+Adding optional pieces later (per the [support matrix](../../docs/docs/extraction/prerequisites-support-matrix.md#model-hardware-requirements)):
+
+- **Reranker**: +1 GPU (or 0 if co-located on an ≥80 GB GPU with the core NIMs).
+- **In-cluster answer LLM (Super-49B)**: **+2 GPUs**.
+- **Omni captioning**: +1 GPU (≥80 GB).
+- **Parakeet ASR** (audio/video): +1 GPU (not supported on Blackwell/H200 NVL).
+
+So even the "everything on" configuration (4 core + 1 rerank + 2 LLM + caption + ASR) fits
+inside 8 GPUs. **Minimum to run RAG retrieval: 1 GPU.**
+
+## 3. Prerequisites
+
+- A Brev GPU instance (≥1 GPU; 4+ recommended for the default layout) with the
+  **NVIDIA driver installed** (`nvidia-smi` works) and outbound network to
+  `nvcr.io`, `helm.ngc.nvidia.com`, and (for hosted answers) `build.nvidia.com`.
+- An **NGC API key** — <https://org.ngc.nvidia.com/setup/api-keys>. It pulls the
+  service image and the NIM model weights.
+- ~150 GB free disk for NIM model caches (see support matrix).
+
+## 4. Launch
+
+```bash
+# from the repo root
+export NGC_API_KEY=nvapi-xxxxxxxx
+./deploy/brev/bootstrap.sh
+```
+
+`bootstrap.sh` installs, in order: **k3s** (single-node k8s) → **NVIDIA GPU
+Operator** (exposes `nvidia.com/gpu`, reuses the host driver) → **NVIDIA NIM
+Operator** (CRDs) → the repo **Helm chart** with
+[`values-brev-core.yaml`](./values-brev-core.yaml).
+
+First run downloads model weights to PVCs and can take 10–30 min. Watch:
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+kubectl get pods,nimcache,nimservice -n retriever -w
+```
+
+When the service and the four `nimservice` resources are Ready, expose it:
+
+```bash
+kubectl port-forward -n retriever svc/retriever-nemo-retriever 7670:7670
+curl -s http://localhost:7670/v1/health
+```
+
+Then open **[`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb)**
+and run it top-to-bottom: health → ingest a multimodal PDF → inspect extraction →
+query → (optional) generate an answer.
+
+```bash
+export RETRIEVER_URL=http://localhost:7670
+# optional, for the answer step:
+export NVIDIA_API_KEY=nvapi-xxxxxxxx
+```
+
+## 5. Variations
+
+**Pack the 4 core NIMs onto 1 GPU (free up GPUs).** Configure GPU time-slicing in
+the GPU Operator so one physical GPU advertises multiple `nvidia.com/gpu`, then
+schedule all core NIMs there. See the
+[NIM Operator GPU-sharing docs](https://docs.nvidia.com/nim-operator/latest/index.html)
+and [deployment-options.md](../../docs/docs/extraction/deployment-options.md).
+
+**Host the answer LLM in-cluster (+2 GPUs).** Re-run the last helm step (or
+`helm upgrade`) adding:
+
+```bash
+--set nimOperator.answer_llm.enabled=true
+```
+
+The service then serves `POST /v1/answer` end-to-end (Option B in the notebook).
+
+**Add the reranker.** `--set nimOperator.rerankqa.enabled=true` (needs an ≥80 GB
+GPU to co-reside with the core pipeline, else a dedicated GPU).
+
+**Enable audio/video ingestion.** `--set nimOperator.audio.enabled=true`
+`--set service.installFfmpeg=true`
+`--set serviceConfig.nimEndpoints.audioGrpcEndpoint=audio:50051` (H100/A100 GPU;
+not supported on Blackwell/H200 NVL).
+
+## 6. Teardown
+
+```bash
+helm uninstall retriever -n retriever
+kubectl delete nimservice,nimcache -n retriever --all   # NIMCaches are kept by default
+```
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install (k3s + GPU Operator + NIM Operator + chart). |
+| [`values-brev-core.yaml`](./values-brev-core.yaml) | Helm override: core RAG only, optional NIMs off. |
+| [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: ingest → query → answer. |
+
+> This is a reference launchable provided "as is". Bootstrap steps (k8s distro,
+> GPU runtime) may need adjustment for your specific Brev image. Secure the
+> service (AuthN/AuthZ) before exposing it beyond the node.
