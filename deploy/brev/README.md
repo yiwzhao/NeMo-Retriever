@@ -87,10 +87,21 @@ export NGC_API_KEY=nvapi-xxxxxxxx
 ./deploy/brev/bootstrap.sh
 ```
 
-`bootstrap.sh` installs, in order: **k3s** (single-node k8s) → **NVIDIA GPU
-Operator** (exposes `nvidia.com/gpu`, reuses the host driver) → **NVIDIA NIM
-Operator** (CRDs) → the repo **Helm chart** with
-[`values-brev-core.yaml`](./values-brev-core.yaml).
+`bootstrap.sh` installs, in order: **k3s** (single-node k8s) → **host
+nvidia-container-toolkit** + k3s-native runtime detection + `nvidia` set as the
+default containerd runtime → **NVIDIA GPU Operator** (device-plugin +
+time-slicing; its own toolkit disabled) → **NVIDIA NIM Operator** (CRDs) → the
+repo **Helm chart** with [`values-brev-core.yaml`](./values-brev-core.yaml).
+
+> **Why the host toolkit instead of the GPU Operator's?** On k3s (containerd
+> 2.x) the GPU Operator's bundled container-toolkit rewrites containerd's config
+> with generic CNI paths and drops the k3s base config — this breaks the CNI
+> plugin and pins the node `NotReady`. Installing the toolkit on the host and
+> letting k3s natively detect the `nvidia` runtime keeps CNI intact. The
+> device-plugin's `toolkit-validation` init then waits on
+> `/run/nvidia/validations/toolkit-ready`, which the script creates (the host
+> stack is already the ready runtime). This path is verified on
+> **RTX PRO 6000 (Blackwell) + k3s v1.36 / containerd 2.x**.
 
 First run downloads model weights to PVCs and can take 10–30 min. Watch:
 

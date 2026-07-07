@@ -28,9 +28,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHART_DIR="${REPO_ROOT}/nemo_retriever/helm"
 VALUES="${REPO_ROOT}/deploy/brev/values-brev-core.yaml"
 
-# Leave empty to install the LATEST GPU Operator. Required so its bundled
-# container-toolkit understands k3s's containerd 2.x (config version 3).
-# Old pins (e.g. v24.9.1) crash the toolkit with "unsupported config version: 3".
+# Leave empty to install the LATEST GPU Operator — needed so its device-plugin
+# supports this k3s's containerd 2.x. (We disable the operator's own toolkit and
+# use the host toolkit instead; see section 2.)
 GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-}"
 NIM_OPERATOR_VERSION="${NIM_OPERATOR_VERSION:-}"   # empty = latest
 # GPU time-slicing: how many schedulable nvidia.com/gpu units each PHYSICAL GPU
@@ -43,6 +43,13 @@ log() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 die() { echo -e "\n\033[1;31mERROR: $*\033[0m" >&2; exit 1; }
 
 [[ -n "${NGC_API_KEY:-}" ]] || die "NGC_API_KEY is not set. export NGC_API_KEY=nvapi-..."
+# Guard against pasting a placeholder key with non-ASCII characters (e.g. the
+# Chinese "你的key"). A non-ASCII key silently breaks the HTTP Authorization
+# header the service sends to the NIMs (UnicodeEncodeError) — ingestion then
+# fails even though images/weights pull fine.
+if printf '%s' "${NGC_API_KEY}" | LC_ALL=C grep -q '[^ -~]'; then
+  die "NGC_API_KEY contains non-ASCII characters — did you paste a placeholder? Use your real nvapi-... key."
+fi
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found — this node has no usable GPU driver."
 
 log "GPUs visible on this node:"
@@ -70,16 +77,57 @@ log "Waiting for the node to be Ready"
 kubectl wait --for=condition=Ready node --all --timeout=180s
 
 # -----------------------------------------------------------------------------
-# 2. NVIDIA GPU Operator — exposes nvidia.com/gpu to the scheduler
-#    (driver.enabled=false: reuse the host driver already on the Brev image)
+# 2. GPU runtime on k3s — host container-toolkit + k3s NATIVE detection
 # -----------------------------------------------------------------------------
-log "Installing NVIDIA GPU Operator (${GPU_OPERATOR_VERSION}) with GPU time-slicing x${GPU_TIMESLICING_REPLICAS}"
+# We deliberately do NOT let the GPU Operator manage containerd. Its bundled
+# container-toolkit is incompatible with this k3s's containerd 2.x: it rewrites
+# k3s's containerd config with generic CNI paths (/etc/cni/net.d) and drops the
+# k3s base config, which breaks the CNI plugin and pins the node NotReady. It
+# also keeps re-writing that config, fighting any manual fix.
+#
+# Instead: install nvidia-container-toolkit on the HOST and let k3s natively
+# detect the `nvidia` runtime (k3s writes it into its own config correctly,
+# preserving CNI). Then set nvidia as the default runtime via a k3s containerd
+# drop-in so the operator's device-plugin (and every GPU pod) gets the GPU.
+CONTAINERD_DIR=/var/lib/rancher/k3s/agent/etc/containerd
+
+log "Installing nvidia-container-toolkit on the host (apt)"
+if ! command -v nvidia-container-runtime >/dev/null; then
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y nvidia-container-toolkit
+fi
+command -v nvidia-container-runtime >/dev/null \
+  || die "nvidia-container-runtime not on PATH after apt install."
+
+log "Restarting k3s so it natively detects the nvidia runtime"
+sudo systemctl restart k3s
+sleep 20
+
+log "Setting nvidia as the DEFAULT containerd runtime (k3s config-v3.toml.d drop-in)"
+sudo mkdir -p "${CONTAINERD_DIR}/config-v3.toml.d"
+sudo tee "${CONTAINERD_DIR}/config-v3.toml.d/99-nvidia-default.toml" >/dev/null <<'EOF'
+version = 3
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+  default_runtime_name = "nvidia"
+EOF
+sudo systemctl restart k3s
+sleep 20
+kubectl wait --for=condition=Ready node --all --timeout=180s
+
+# -----------------------------------------------------------------------------
+# 3. NVIDIA GPU Operator — device-plugin + time-slicing ONLY (toolkit DISABLED)
+# -----------------------------------------------------------------------------
+log "Installing NVIDIA GPU Operator (device-plugin + time-slicing x${GPU_TIMESLICING_REPLICAS}; toolkit disabled)"
 helm repo add nvidia https://helm.ngc.nvidia.com/nvidia >/dev/null 2>&1 || true
 helm repo update >/dev/null
 
 # The device-plugin reads this ConfigMap to advertise each physical GPU as
-# ${GPU_TIMESLICING_REPLICAS} schedulable nvidia.com/gpu units. Must exist
-# before/at operator install so the plugin picks it up on first start.
+# ${GPU_TIMESLICING_REPLICAS} schedulable nvidia.com/gpu units.
 kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -99,30 +147,27 @@ data:
           replicas: ${GPU_TIMESLICING_REPLICAS}
 EOF
 
-# k3s ships its own containerd at non-standard paths, so the GPU Operator's
-# container-toolkit must be pointed at them and told to register the `nvidia`
-# runtime as the DEFAULT — otherwise NIM pods start without driver injection and
-# crashloop with "NVIDIA Driver was not detected / libnvidia-ml.so.1 not found".
-# The toolkit writes the runtime into k3s's containerd template; k3s merges it
-# into the live config on (re)start. This k3s uses `config.toml`, so the
-# template is `config.toml.tmpl`.
+# driver.enabled=false: reuse the host driver. toolkit.enabled=false: the
+# runtime is installed on the host (above); the operator only runs the
+# device-plugin + validators here.
 GPU_VERSION_FLAG=()
 [[ -n "${GPU_OPERATOR_VERSION}" ]] && GPU_VERSION_FLAG=(--version "${GPU_OPERATOR_VERSION}")
 helm upgrade --install gpu-operator nvidia/gpu-operator \
   -n gpu-operator "${GPU_VERSION_FLAG[@]}" \
   --set driver.enabled=false \
-  --set toolkit.enabled=true \
+  --set toolkit.enabled=false \
   --set devicePlugin.config.name=time-slicing-config \
   --set devicePlugin.config.default=any \
-  --set toolkit.env[0].name=CONTAINERD_CONFIG \
-  --set-string toolkit.env[0].value=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl \
-  --set toolkit.env[1].name=CONTAINERD_SOCKET \
-  --set-string toolkit.env[1].value=/run/k3s/containerd/containerd.sock \
-  --set toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS \
-  --set-string toolkit.env[2].value=nvidia \
-  --set toolkit.env[3].name=CONTAINERD_SET_AS_DEFAULT \
-  --set-string toolkit.env[3].value=true \
-  --wait --timeout 15m
+  --wait --timeout 15m || \
+  echo "GPU Operator --wait timed out (device-plugin waits for the toolkit-ready marker below); continuing."
+
+# With toolkit.enabled=false, the device-plugin's `toolkit-validation` init
+# container still blocks on /run/nvidia/validations/toolkit-ready — normally
+# written by the operator toolkit. Our host toolkit + nvidia default runtime IS
+# the ready stack, so create the marker to unblock the device-plugin.
+log "Creating toolkit-ready marker so the device-plugin init can proceed"
+sudo mkdir -p /run/nvidia/validations
+sudo touch /run/nvidia/validations/toolkit-ready
 
 log "Waiting for time-sliced nvidia.com/gpu units to be advertised on the node"
 for i in $(seq 1 60); do
@@ -131,11 +176,11 @@ for i in $(seq 1 60); do
     break
   fi
   sleep 10
-  [[ $i -eq 60 ]] && die "Node never advertised nvidia.com/gpu — check GPU Operator pods in ns gpu-operator."
+  [[ $i -eq 60 ]] && die "Node never advertised nvidia.com/gpu — check the device-plugin pod in ns gpu-operator (is /run/nvidia/validations/toolkit-ready present, default runtime nvidia?)."
 done
 
 # -----------------------------------------------------------------------------
-# 3. NVIDIA NIM Operator — reconciles NIMCache / NIMService CRDs
+# 4. NVIDIA NIM Operator — reconciles NIMCache / NIMService CRDs
 # -----------------------------------------------------------------------------
 log "Installing NVIDIA NIM Operator"
 kubectl create namespace nim-operator --dry-run=client -o yaml | kubectl apply -f -
@@ -156,7 +201,7 @@ for i in $(seq 1 30); do
 done
 
 # -----------------------------------------------------------------------------
-# 4. NeMo Retriever — core stack via the repo Helm chart
+# 5. NeMo Retriever — core stack via the repo Helm chart
 # -----------------------------------------------------------------------------
 kubectl create namespace "${NS}" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -172,7 +217,7 @@ helm upgrade --install "${RELEASE}" "${CHART_DIR}" \
     echo "helm --wait timed out; NIM model downloads can take a while. Continuing to status." ; }
 
 # -----------------------------------------------------------------------------
-# 5. Status + how to reach the service
+# 6. Status + how to reach the service
 # -----------------------------------------------------------------------------
 log "NIM reconciliation status (weights download to PVCs on first run):"
 kubectl get nimcache,nimservice -n "${NS}" || true
