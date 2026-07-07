@@ -96,6 +96,12 @@ data:
           replicas: ${GPU_TIMESLICING_REPLICAS}
 EOF
 
+# k3s ships its own containerd at non-standard paths, so the GPU Operator's
+# container-toolkit must be pointed at them and told to register the `nvidia`
+# runtime as the DEFAULT — otherwise NIM pods start without driver injection and
+# crashloop with "NVIDIA Driver was not detected / libnvidia-ml.so.1 not found".
+# NOTE: k3s ≥ v1.32 uses containerd 2.x → template file `config-v3.toml.tmpl`.
+# For older k3s use `/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl`.
 helm upgrade --install gpu-operator nvidia/gpu-operator \
   -n gpu-operator \
   --version "${GPU_OPERATOR_VERSION}" \
@@ -103,6 +109,14 @@ helm upgrade --install gpu-operator nvidia/gpu-operator \
   --set toolkit.enabled=true \
   --set devicePlugin.config.name=time-slicing-config \
   --set devicePlugin.config.default=any \
+  --set toolkit.env[0].name=CONTAINERD_CONFIG \
+  --set-string toolkit.env[0].value=/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl \
+  --set toolkit.env[1].name=CONTAINERD_SOCKET \
+  --set-string toolkit.env[1].value=/run/k3s/containerd/containerd.sock \
+  --set toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS \
+  --set-string toolkit.env[2].value=nvidia \
+  --set toolkit.env[3].name=CONTAINERD_SET_AS_DEFAULT \
+  --set-string toolkit.env[3].value=true \
   --wait --timeout 15m
 
 log "Waiting for time-sliced nvidia.com/gpu units to be advertised on the node"
