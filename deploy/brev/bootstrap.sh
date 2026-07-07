@@ -28,7 +28,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHART_DIR="${REPO_ROOT}/nemo_retriever/helm"
 VALUES="${REPO_ROOT}/deploy/brev/values-brev-core.yaml"
 
-GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v24.9.1}"
+# Leave empty to install the LATEST GPU Operator. Required so its bundled
+# container-toolkit understands k3s's containerd 2.x (config version 3).
+# Old pins (e.g. v24.9.1) crash the toolkit with "unsupported config version: 3".
+GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-}"
 NIM_OPERATOR_VERSION="${NIM_OPERATOR_VERSION:-}"   # empty = latest
 # GPU time-slicing: how many schedulable nvidia.com/gpu units each PHYSICAL GPU
 # advertises. Lets all 4 core NIMs (≈4.8 GiB combined) share ONE large card
@@ -100,17 +103,19 @@ EOF
 # container-toolkit must be pointed at them and told to register the `nvidia`
 # runtime as the DEFAULT — otherwise NIM pods start without driver injection and
 # crashloop with "NVIDIA Driver was not detected / libnvidia-ml.so.1 not found".
-# NOTE: k3s ≥ v1.32 uses containerd 2.x → template file `config-v3.toml.tmpl`.
-# For older k3s use `/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl`.
+# The toolkit writes the runtime into k3s's containerd template; k3s merges it
+# into the live config on (re)start. This k3s uses `config.toml`, so the
+# template is `config.toml.tmpl`.
+GPU_VERSION_FLAG=()
+[[ -n "${GPU_OPERATOR_VERSION}" ]] && GPU_VERSION_FLAG=(--version "${GPU_OPERATOR_VERSION}")
 helm upgrade --install gpu-operator nvidia/gpu-operator \
-  -n gpu-operator \
-  --version "${GPU_OPERATOR_VERSION}" \
+  -n gpu-operator "${GPU_VERSION_FLAG[@]}" \
   --set driver.enabled=false \
   --set toolkit.enabled=true \
   --set devicePlugin.config.name=time-slicing-config \
   --set devicePlugin.config.default=any \
   --set toolkit.env[0].name=CONTAINERD_CONFIG \
-  --set-string toolkit.env[0].value=/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl \
+  --set-string toolkit.env[0].value=/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl \
   --set toolkit.env[1].name=CONTAINERD_SOCKET \
   --set-string toolkit.env[1].value=/run/k3s/containerd/containerd.sock \
   --set toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS \
