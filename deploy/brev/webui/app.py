@@ -22,6 +22,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -53,6 +54,36 @@ MINI_CORPUS = [
 ]
 
 app = FastAPI(title="NeMo Retriever Deploy")
+
+
+# ── keep localhost:7670 wired to the in-cluster service ──────────────────────
+# The retriever service is a ClusterIP; the host reaches it via `kubectl
+# port-forward`. Run a self-healing forward so the playground (and any local
+# client) can hit http://localhost:7670 without a manual step.
+_PF_PORT = "7670"
+
+
+def _portforward_manager() -> None:
+    if not ("localhost" in RETRIEVER_URL or "127.0.0.1" in RETRIEVER_URL):
+        return
+    env = dict(os.environ)
+    env.setdefault("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
+    kubectl = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+    proc = None
+    while True:
+        try:
+            if proc is None or proc.poll() is not None:
+                proc = subprocess.Popen(
+                    [kubectl, "port-forward", "-n", "retriever",
+                     "svc/retriever-nemo-retriever", f"{_PF_PORT}:{_PF_PORT}"],
+                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+        except Exception:  # noqa: BLE001 - kubectl may not exist until k3s is installed
+            proc = None
+        time.sleep(5)
+
+
+threading.Thread(target=_portforward_manager, daemon=True).start()
 
 # ── deploy state (single run at a time) ──────────────────────────────────────
 _state = {"phase": "idle", "running": False, "done": False, "ok": False}
