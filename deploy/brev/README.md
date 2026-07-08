@@ -6,9 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 
 # NeMo Retriever on Brev — single-node launchable (Core RAG)
 
-A one-command bootstrap that stands up the **core** NeMo Retriever stack on a
-single Brev GPU node (single-node Kubernetes), plus a notebook that drives the
-running service over its REST API.
+A one-click **Deploy UI** (or one-command bootstrap) that stands up the **core**
+NeMo Retriever stack on a single Brev GPU node (single-node Kubernetes), plus an
+ingest + query playground and a notebook that drive the running service over its
+REST API. See [§0 Deploy in one click](#0-deploy-in-one-click-recommended).
 
 Everything on Brev is **single node**, so you are capped at the node's GPUs
 (up to **8**). This launchable runs the core stack on a **single GPU** (via
@@ -21,25 +22,37 @@ time-slicing) and leaves headroom to add the reranker / answer LLM later.
 No terminal needed. The launchable ships a small **Deploy UI** that runs the
 whole bootstrap for you and gives you an ingest + query playground when it's done.
 
-**Set up the Brev launchable (VM Mode):**
+> **Verified end-to-end** on a fresh Brev instance (RTX PRO 6000): open the
+> Deploy UI → paste key → click Deploy → stack goes live → the built-in
+> playground ingested a 6-PDF corpus (32 chunks) and returned correct query hits.
 
-1. **Code files** → point at this repo (`https://github.com/<you>/NeMo-Retriever.git`)
-   so Brev clones everything, *or* leave it and let the setup script clone it.
-2. **Setup script** → paste the contents of [`setup.sh`](./setup.sh) (it clones the
-   repo and starts the Deploy UI + Jupyter — no secret needed here).
-3. **Expose ports** → `8000` (Deploy UI) and `8888` (Jupyter).
+**Create the Brev launchable (VM Mode):**
+
+1. **Code files** → *I don't have any code files* (the setup script clones the repo).
+2. **Setup script** → paste this (it fetches and runs [`setup.sh`](./setup.sh),
+   which clones the repo and starts the Deploy UI + Jupyter — no secret needed):
+   ```bash
+   #!/bin/bash
+   set -e
+   curl -fsSL https://raw.githubusercontent.com/<you>/NeMo-Retriever/main/deploy/brev/setup.sh | bash
+   ```
+3. **Expose ports (Secure Link)** → `8000` **(set as CTA)** for the Deploy UI, and
+   `8888` for Jupyter.
+4. **Compute** → one large GPU (e.g. 1× RTX PRO 6000).
 
 **Then, as a user:**
 
-1. Open the **Deploy UI** (Brev Secure Link for port `8000`).
+1. Launch the instance and open the **Deploy UI** (the `8000` CTA Secure Link).
 2. Paste your **NGC API key** and click **Deploy Launchable**.
 3. Watch the live activity log while it installs k3s + the GPU stack + NeMo
    Retriever (first run pulls weights, 10–30 min).
-4. When it's live, use the built-in **ingest + query playground**, or open the
-   full notebook for the single-doc + scaled-corpus walkthrough.
+4. When it's live, use the built-in **ingest + query playground** (single PDF or a
+   6-PDF corpus), or open the full notebook for the deeper walkthrough.
 
-Everything below is the **manual/terminal path** and the reference details behind
-what the Deploy UI does.
+The Deploy UI also runs a self-healing `kubectl port-forward` so `localhost:7670`
+reaches the in-cluster service, and auto-detects an already-live stack if you
+reopen it. Everything below is the **manual/terminal path** and the reference
+details behind what the Deploy UI does.
 
 ## 1. Components & services
 

@@ -25,6 +25,13 @@ single-node Kubernetes (k3s) + Helm, plus a notebook
 ([`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb))
 that drives the running service over its REST API (ingest → query → answer).
 
+**One-click layer.** For a no-terminal experience, [`setup.sh`](./setup.sh) is a
+Brev setup script that clones the repo and starts a small **Deploy UI**
+([`webui/`](./webui/), FastAPI): the user pastes an NGC key, clicks **Deploy**,
+watches `bootstrap.sh`'s live log, and lands on an ingest + query playground. The
+Deploy UI also runs a self-healing `kubectl port-forward` (host → in-cluster
+service on `localhost:7670`) and auto-detects an already-live stack on reopen.
+
 **Scope:** the four core NIMs + the FastAPI service + LanceDB. Reranking, the
 in-cluster answer LLM, audio/video (Parakeet), captioning (Omni), and Nemotron
 Parse are **off by default**. Answer generation is expected to run against an
@@ -57,6 +64,11 @@ by the containerd 2.x behavior below.
 8 extracted chunks (text + table + chart); a query for *"Which animal is jumping
 onto a laptop?"* returned the correct row `| Cat | Jumping onto a laptop | In a
 home office |`.
+
+**One-click validation:** on a *fresh* Brev instance, the [`setup.sh`](./setup.sh)
++ Deploy UI path was driven entirely from the browser — paste key → Deploy →
+stack live (health OK) → the playground ingested the **6-PDF corpus (32 chunks)**
+and returned correct query hits. No terminal was used.
 
 ---
 
@@ -251,6 +263,15 @@ were one-off actions on the live node.
   passes image pulls but breaks every NIM call with a `UnicodeEncodeError`.
 - **`/run` is tmpfs:** the `toolkit-ready` marker does not survive a reboot. On a
   long-lived node, re-create it (or add a systemd unit) if the box reboots.
+- **Reaching the service from the host needs a port-forward.** The retriever
+  service is a ClusterIP; a host-side client (the Deploy UI, curl, the notebook)
+  can't hit it directly. Run `kubectl port-forward … 7670:7670` — the Deploy UI
+  does this in a self-healing loop so `localhost:7670` just works.
+- **Brev's system Python is not user-writable** (`/opt/python-venv`), and `--user`
+  is rejected inside a venv — install the Deploy UI into a dedicated venv
+  (`python3 -m venv --system-site-packages …`).
+- **Brev setup scripts** must start with `#!/bin/bash`; the smallest reliable one
+  is a shebang + `curl -fsSL …/setup.sh | bash` that fetches the real script.
 
 ---
 
@@ -309,10 +330,12 @@ $2–2.6/hr depending on provider.
 
 | File | Purpose |
 |------|---------|
+| [`setup.sh`](./setup.sh) | Brev setup script: clones the repo, starts the Deploy UI + Jupyter (no secret). |
+| [`webui/`](./webui/) | One-click Deploy UI (FastAPI + HTML): NGC key → runs `bootstrap.sh` (live log) → ingest + query playground. |
 | [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install. |
 | [`values-brev-core.yaml`](./values-brev-core.yaml) | Helm override: core RAG only. |
-| [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: ingest → query → answer. |
-| [`README.md`](./README.md) | Short "how to run it" guide. |
+| [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Single doc → query → answer → scaled multi-doc corpus. |
+| [`README.md`](./README.md) | Short "how to run it" guide (one-click + manual). |
 | `DEPLOYMENT_NOTES.md` | This document — full reference + troubleshooting log. |
 
 > Reference launchable provided "as is". The GPU-runtime steps were shaped on the
