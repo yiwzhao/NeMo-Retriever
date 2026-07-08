@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NeMo Retriever — Deploy</title>
+<style>
+  :root { --bg:#0b0d0b; --panel:#141714; --panel2:#1b1f1a; --line:#2a2f27;
+          --green:#76b900; --green2:#8fd400; --text:#e8ece6; --muted:#9aa295; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,monospace; }
+  a { color:var(--green2); }
+  .wrap { max-width:1080px; margin:0 auto; padding:32px 24px 64px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom:28px; }
+  .brand .logo { width:34px; height:34px; border-radius:8px; background:var(--green);
+                 display:grid; place-items:center; color:#0b0d0b; font-weight:800; }
+  .brand h1 { font-size:16px; letter-spacing:.14em; margin:0; text-transform:uppercase; }
+  .brand small { color:var(--muted); letter-spacing:.14em; }
+  .steps { display:flex; gap:8px; margin-bottom:24px; }
+  .steps .s { flex:1; padding:10px 14px; border:1px solid var(--line); border-radius:10px;
+              color:var(--muted); font-size:12px; letter-spacing:.12em; text-transform:uppercase; }
+  .steps .s.active { border-color:var(--green); color:var(--green2); }
+  .steps .s.done { color:var(--text); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px; margin-bottom:20px; }
+  .tag { display:inline-block; background:var(--green); color:#0b0d0b; font-weight:700; font-size:11px;
+         letter-spacing:.12em; padding:4px 10px; border-radius:6px; text-transform:uppercase; }
+  h2 { font-size:30px; margin:14px 0 6px; }
+  h2 .g { color:var(--green2); }
+  p.sub { color:var(--muted); margin:0 0 20px; }
+  label { display:block; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin:16px 0 6px; }
+  input[type=text], input[type=password] { width:100%; background:var(--panel2); border:1px solid var(--line);
+         border-radius:10px; color:var(--text); padding:14px; font-size:15px; font-family:inherit; }
+  input:focus { outline:none; border-color:var(--green); }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  button { background:var(--green); color:#0b0d0b; border:0; border-radius:10px; font-weight:800;
+           letter-spacing:.06em; padding:14px 22px; font-size:14px; cursor:pointer; font-family:inherit; }
+  button.secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+  .err { color:#ff8a8a; font-size:13px; margin-top:10px; min-height:18px; }
+  .log { background:#07080a; border:1px solid var(--line); border-radius:10px; padding:14px;
+         height:420px; overflow:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+         line-height:1.55; white-space:pre-wrap; color:#c7d0bf; }
+  .log .ok { color:var(--green2); }
+  .bar { height:6px; background:var(--panel2); border-radius:6px; overflow:hidden; margin:10px 0 4px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--green); transition:width .4s; }
+  .hits .hit { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-top:10px; background:var(--panel2); }
+  .hits .meta { color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:8px; }
+  .stat { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .stat b { display:block; font-size:26px; color:var(--green2); }
+  .stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.1em; }
+  .hidden { display:none; }
+  .pill { font-size:12px; color:var(--muted); }
+  .ok-dot { color:var(--green2); } .bad-dot { color:#ff8a8a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">◈</div>
+    <div><h1>NeMo Retriever</h1><small>Single-node launchable</small></div>
+  </div>
+
+  <div class="steps">
+    <div class="s active" id="st1">01 · Connect</div>
+    <div class="s" id="st2">02 · Deploy</div>
+    <div class="s" id="st3">03 · Try it</div>
+  </div>
+
+  <!-- STEP 1 -->
+  <div class="card" id="card1">
+    <span class="tag">Configuration</span>
+    <h2>Connect to <span class="g">NGC</span></h2>
+    <p class="sub">Paste your NVIDIA NGC API key. It pulls the service image and the NIM
+      model weights, and is used only on this node.</p>
+    <label>NGC API key</label>
+    <input id="key" type="password" placeholder="nvapi-..." autocomplete="off" spellcheck="false" />
+    <div class="hint">Get one at <a href="https://org.ngc.nvidia.com/setup/api-keys" target="_blank">org.ngc.nvidia.com</a>.
+      Deploying installs k3s + the GPU stack + NeMo Retriever; first run pulls model weights (10–30 min).</div>
+    <div class="err" id="err1"></div>
+    <div class="row" style="margin-top:18px">
+      <button id="deployBtn">Deploy Launchable ▸</button>
+      <span class="pill" id="preflight"></span>
+    </div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div class="card hidden" id="card2">
+    <span class="tag">In progress</span>
+    <h2>Building your <span class="g">stack</span></h2>
+    <p class="sub">k3s → host GPU runtime → GPU Operator → NIM Operator → NeMo Retriever.
+      Weights download on first run.</p>
+    <div class="bar"><i id="prog"></i></div>
+    <div class="row" style="justify-content:space-between">
+      <span class="pill" id="phase">preflight…</span>
+      <span class="pill" id="elapsed"></span>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div class="card hidden" id="card3">
+    <span class="tag">Ready</span>
+    <h2>Your stack is <span class="g">live</span></h2>
+    <p class="sub">Service health: <span id="healthDot" class="pill">checking…</span></p>
+
+    <div class="grid" id="stats" class="hidden">
+      <div class="stat"><b id="stDocs">–</b><span>Documents</span></div>
+      <div class="stat"><b id="stRows">–</b><span>Chunks indexed</span></div>
+      <div class="stat"><b id="stHits">–</b><span>Last query hits</span></div>
+    </div>
+
+    <label>1 · Ingest sample data</label>
+    <div class="row">
+      <button id="ingestSample" class="secondary">Ingest 1 PDF (fast)</button>
+      <button id="ingestCorpus" class="secondary">Ingest sample corpus (<span id="corpusN">6</span> PDFs)</button>
+      <span class="pill" id="ingestStatus"></span>
+    </div>
+
+    <label>2 · Ask a question</label>
+    <div class="row">
+      <input id="q" type="text" placeholder="Which animal is jumping onto a laptop?" />
+      <button id="askBtn">Search</button>
+    </div>
+    <div class="err" id="err3"></div>
+    <div class="hits" id="hits"></div>
+
+    <label>3 · Go deeper</label>
+    <div class="hint" id="nbHint"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let cfg = { notebook_url:"", corpus_size:6 };
+let t0 = 0, timer = null;
+
+fetch("/api/config").then(r=>r.json()).then(c=>{
+  cfg = c; $("#corpusN").textContent = c.corpus_size;
+  $("#nbHint").innerHTML = c.notebook_url
+    ? `Open the full walkthrough (single doc + a scaled dataset) in the notebook: <a href="${c.notebook_url}" target="_blank">nemo_retriever_quickstart.ipynb ▸</a>`
+    : `Open the full walkthrough in Jupyter: <code>deploy/brev/notebooks/nemo_retriever_quickstart.ipynb</code>`;
+});
+
+// If a deploy is already running/finished (page reload), resume the right step.
+fetch("/api/status").then(r=>r.json()).then(s=>{
+  if (s.phase === "running") { showStep(2); streamLogs(); }
+  else if (s.phase === "done") { showStep(3); onLive(); }
+});
+
+function showStep(n){
+  for (const i of [1,2,3]) {
+    $("#card"+i).classList.toggle("hidden", i!==n);
+    $("#st"+i).classList.toggle("active", i===n);
+    $("#st"+i).classList.toggle("done", i<n);
+  }
+}
+
+$("#deployBtn").onclick = async () => {
+  const key = $("#key").value.trim();
+  $("#err1").textContent = "";
+  if (!key) { $("#err1").textContent = "Enter your NGC API key."; return; }
+  $("#deployBtn").disabled = true;
+  const r = await fetch("/api/deploy", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ngc_api_key:key})});
+  const d = await r.json();
+  if (!r.ok) { $("#err1").textContent = d.error || "Failed to start."; $("#deployBtn").disabled=false; return; }
+  showStep(2); startTimer(); streamLogs();
+};
+
+function startTimer(){ t0 = Date.now(); timer = setInterval(()=>{
+  const s = Math.floor((Date.now()-t0)/1000);
+  $("#elapsed").textContent = `${Math.floor(s/60)}m ${s%60}s`;
+}, 1000); }
+
+const PHASES = ["k3s","GPU runtime","GPU Operator","NIM Operator","NeMo Retriever","Done"];
+function updatePhase(line){
+  let p = 0;
+  if (/GPU runtime|container-toolkit/i.test(line)) p=1;
+  if (/GPU Operator/i.test(line)) p=2;
+  if (/NIM Operator/i.test(line)) p=3;
+  if (/Installing NeMo Retriever/i.test(line)) p=4;
+  if (p) { $("#phase").textContent = PHASES[p] + "…"; $("#prog").style.width = (p*16)+"%"; }
+}
+
+function streamLogs(){
+  const box = $("#log");
+  const es = new EventSource("/api/logs");
+  es.onmessage = e => {
+    const {line} = JSON.parse(e.data);
+    const div = document.createElement("div");
+    if (line.startsWith("==>")) div.className = "ok";
+    div.textContent = line; box.appendChild(div); box.scrollTop = box.scrollHeight;
+    updatePhase(line);
+  };
+  es.addEventListener("end", e => {
+    es.close(); clearInterval(timer);
+    const {ok} = JSON.parse(e.data);
+    $("#prog").style.width = "100%";
+    if (ok) { showStep(3); onLive(); }
+    else { $("#phase").textContent = "failed — see log above"; }
+  });
+}
+
+async function onLive(){
+  // poll health until 200
+  for (let i=0;i<30;i++){
+    const h = await (await fetch("/api/health")).json();
+    if (h.ok){ $("#healthDot").innerHTML = `<span class="ok-dot">● ok</span>`; return; }
+    $("#healthDot").innerHTML = `<span class="pill">warming up… (${i})</span>`;
+    await new Promise(r=>setTimeout(r,4000));
+  }
+  $("#healthDot").innerHTML = `<span class="bad-dot">● not reachable — NIMs may still be building</span>`;
+}
+
+async function ingest(which, btn){
+  $("#ingestStatus").textContent = "ingesting… (first run builds engines; can take a few min)";
+  btn.disabled = true;
+  const r = await fetch("/api/ingest",{method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({which})});
+  const d = await r.json(); btn.disabled = false;
+  if (d.error){ $("#ingestStatus").textContent = "error: "+d.error; return; }
+  const ok = d.documents.filter(x=>x.status==="completed").length;
+  $("#ingestStatus").textContent = `done — ${ok}/${d.documents.length} docs, ${d.total_rows} chunks`;
+  $("#stats").classList.remove("hidden");
+  $("#stDocs").textContent = ok; $("#stRows").textContent = d.total_rows;
+}
+$("#ingestSample").onclick = e => ingest("sample", e.target);
+$("#ingestCorpus").onclick = e => ingest("corpus", e.target);
+
+$("#askBtn").onclick = async () => {
+  const q = $("#q").value.trim(); $("#err3").textContent=""; $("#hits").innerHTML="";
+  if(!q){ $("#err3").textContent="Enter a query."; return; }
+  $("#askBtn").disabled = true;
+  const r = await fetch("/api/query",{method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({query:q, top_k:5})});
+  const d = await r.json(); $("#askBtn").disabled=false;
+  if (d.error){ $("#err3").textContent = d.error; return; }
+  $("#stHits").textContent = d.hits.length;
+  if (!d.hits.length){ $("#hits").innerHTML = `<div class="hint">No hits — ingest some data first.</div>`; return; }
+  $("#hits").innerHTML = d.hits.map(h => `
+    <div class="hit"><div class="meta">${h.source||""} · score ${(+h.score).toFixed(3)}</div>
+    <div>${(h.text||"").slice(0,320).replace(/</g,"&lt;")}</div></div>`).join("");
+};
+$("#q").addEventListener("keydown", e => { if(e.key==="Enter") $("#askBtn").click(); });
+</script>
+</body>
+</html>

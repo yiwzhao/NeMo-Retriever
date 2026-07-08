@@ -16,6 +16,31 @@ time-slicing) and leaves headroom to add the reranker / answer LLM later.
 
 ---
 
+## 0. Deploy in one click (recommended)
+
+No terminal needed. The launchable ships a small **Deploy UI** that runs the
+whole bootstrap for you and gives you an ingest + query playground when it's done.
+
+**Set up the Brev launchable (VM Mode):**
+
+1. **Code files** → point at this repo (`https://github.com/<you>/NeMo-Retriever.git`)
+   so Brev clones everything, *or* leave it and let the setup script clone it.
+2. **Setup script** → paste the contents of [`setup.sh`](./setup.sh) (it clones the
+   repo and starts the Deploy UI + Jupyter — no secret needed here).
+3. **Expose ports** → `8000` (Deploy UI) and `8888` (Jupyter).
+
+**Then, as a user:**
+
+1. Open the **Deploy UI** (Brev Secure Link for port `8000`).
+2. Paste your **NGC API key** and click **Deploy Launchable**.
+3. Watch the live activity log while it installs k3s + the GPU stack + NeMo
+   Retriever (first run pulls weights, 10–30 min).
+4. When it's live, use the built-in **ingest + query playground**, or open the
+   full notebook for the single-doc + scaled-corpus walkthrough.
+
+Everything below is the **manual/terminal path** and the reference details behind
+what the Deploy UI does.
+
 ## 1. Components & services
 
 NeMo Retriever = a **FastAPI orchestrator** (CPU) + a set of **NVIDIA NIM
@@ -161,9 +186,11 @@ kubectl delete nimservice,nimcache -n retriever --all   # NIMCaches are kept by 
 
 | File | Purpose |
 |------|---------|
-| [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install (k3s + GPU Operator + NIM Operator + chart). |
+| [`setup.sh`](./setup.sh) | Brev setup script: clones the repo and starts the Deploy UI + Jupyter (no secret). |
+| [`webui/`](./webui/) | One-click Deploy UI (FastAPI): NGC key → runs `bootstrap.sh` with a live log → ingest + query playground. |
+| [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install (k3s + GPU runtime + GPU Operator + NIM Operator + chart). |
 | [`values-brev-core.yaml`](./values-brev-core.yaml) | Helm override: core RAG only, optional NIMs off. |
-| [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: ingest → query → answer. |
+| [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: single doc → query → answer → scaled multi-doc corpus. |
 | [`DEPLOYMENT_NOTES.md`](./DEPLOYMENT_NOTES.md) | Full reference: component/GPU details, verified environment, and the complete troubleshooting log. |
 
 > This is a reference launchable provided "as is". Bootstrap steps (k8s distro,
