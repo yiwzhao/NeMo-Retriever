@@ -164,6 +164,7 @@ kubectl delete nimservice,nimcache -n retriever --all   # NIMCaches are kept by 
 | [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install (k3s + GPU Operator + NIM Operator + chart). |
 | [`values-brev-core.yaml`](./values-brev-core.yaml) | Helm override: core RAG only, optional NIMs off. |
 | [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: ingest → query → answer. |
+| [`DEPLOYMENT_NOTES.md`](./DEPLOYMENT_NOTES.md) | Full reference: component/GPU details, verified environment, and the complete troubleshooting log. |
 
 > This is a reference launchable provided "as is". Bootstrap steps (k8s distro,
 > GPU runtime) may need adjustment for your specific Brev image. Secure the
