@@ -11,8 +11,8 @@ single Brev GPU node (single-node Kubernetes), plus a notebook that drives the
 running service over its REST API.
 
 Everything on Brev is **single node**, so you are capped at the node's GPUs
-(target: **8 GPUs**). This launchable uses **4 of them** and leaves headroom to
-add the reranker / answer LLM later.
+(up to **8**). This launchable runs the core stack on a **single GPU** (via
+time-slicing) and leaves headroom to add the reranker / answer LLM later.
 
 ---
 
@@ -94,13 +94,9 @@ time-slicing; its own toolkit disabled) → **NVIDIA NIM Operator** (CRDs) → t
 repo **Helm chart** with [`values-brev-core.yaml`](./values-brev-core.yaml).
 
 > **Why the host toolkit instead of the GPU Operator's?** On k3s (containerd
-> 2.x) the GPU Operator's bundled container-toolkit rewrites containerd's config
-> with generic CNI paths and drops the k3s base config — this breaks the CNI
-> plugin and pins the node `NotReady`. Installing the toolkit on the host and
-> letting k3s natively detect the `nvidia` runtime keeps CNI intact. The
-> device-plugin's `toolkit-validation` init then waits on
-> `/run/nvidia/validations/toolkit-ready`, which the script creates (the host
-> stack is already the ready runtime). This path is verified on
+> 2.x) the GPU Operator's bundled container-toolkit misconfigures containerd and
+> breaks CNI. This launchable installs the toolkit on the host, lets k3s detect
+> the `nvidia` runtime natively, and sets it as the default runtime. Verified on
 > **RTX PRO 6000 (Blackwell) + k3s v1.36 / containerd 2.x**.
 
 First run downloads model weights to PVCs and can take 10–30 min. Watch:

@@ -43,12 +43,10 @@ log() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 die() { echo -e "\n\033[1;31mERROR: $*\033[0m" >&2; exit 1; }
 
 [[ -n "${NGC_API_KEY:-}" ]] || die "NGC_API_KEY is not set. export NGC_API_KEY=nvapi-..."
-# Guard against pasting a placeholder key with non-ASCII characters (e.g. the
-# Chinese "你的key"). A non-ASCII key silently breaks the HTTP Authorization
-# header the service sends to the NIMs (UnicodeEncodeError) — ingestion then
-# fails even though images/weights pull fine.
+# A non-ASCII key breaks the HTTP Authorization header the service sends to the
+# NIMs, so ingestion fails even though images and weights pull fine. Reject early.
 if printf '%s' "${NGC_API_KEY}" | LC_ALL=C grep -q '[^ -~]'; then
-  die "NGC_API_KEY contains non-ASCII characters — did you paste a placeholder? Use your real nvapi-... key."
+  die "NGC_API_KEY contains non-ASCII characters. Use your real nvapi-... key."
 fi
 command -v nvidia-smi >/dev/null || die "nvidia-smi not found — this node has no usable GPU driver."
 
@@ -79,16 +77,11 @@ kubectl wait --for=condition=Ready node --all --timeout=180s
 # -----------------------------------------------------------------------------
 # 2. GPU runtime on k3s — host container-toolkit + k3s NATIVE detection
 # -----------------------------------------------------------------------------
-# We deliberately do NOT let the GPU Operator manage containerd. Its bundled
-# container-toolkit is incompatible with this k3s's containerd 2.x: it rewrites
-# k3s's containerd config with generic CNI paths (/etc/cni/net.d) and drops the
-# k3s base config, which breaks the CNI plugin and pins the node NotReady. It
-# also keeps re-writing that config, fighting any manual fix.
-#
-# Instead: install nvidia-container-toolkit on the HOST and let k3s natively
-# detect the `nvidia` runtime (k3s writes it into its own config correctly,
-# preserving CNI). Then set nvidia as the default runtime via a k3s containerd
-# drop-in so the operator's device-plugin (and every GPU pod) gets the GPU.
+# On k3s (containerd 2.x) the GPU Operator's own container-toolkit misconfigures
+# containerd and breaks CNI, so we don't use it. Instead install
+# nvidia-container-toolkit on the HOST and let k3s detect the `nvidia` runtime
+# natively (this keeps CNI intact), then make it the default runtime via a k3s
+# containerd drop-in so the device-plugin and every GPU pod get the GPU.
 CONTAINERD_DIR=/var/lib/rancher/k3s/agent/etc/containerd
 
 log "Installing nvidia-container-toolkit on the host (apt)"
