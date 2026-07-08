@@ -83,7 +83,25 @@ def _portforward_manager() -> None:
         time.sleep(5)
 
 
+def _detect_existing() -> None:
+    """If the stack is already live (e.g. after a webui restart or reopening the
+    launchable), mark the deploy done so the UI lands on the playground."""
+    while True:
+        with _lock:
+            skip = _state["running"] or _state["phase"] == "done"
+        if not skip:
+            try:
+                if requests.get(f"{RETRIEVER_URL}/v1/health", timeout=3).status_code == 200:
+                    with _lock:
+                        if not _state["running"]:
+                            _state.update(phase="done", running=False, done=True, ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(6)
+
+
 threading.Thread(target=_portforward_manager, daemon=True).start()
+threading.Thread(target=_detect_existing, daemon=True).start()
 
 # ── deploy state (single run at a time) ──────────────────────────────────────
 _state = {"phase": "idle", "running": False, "done": False, "ok": False}
