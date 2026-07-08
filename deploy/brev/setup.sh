@@ -25,13 +25,22 @@ else
   git -C "${REPO_DIR}" fetch origin "${REPO_BRANCH}" && git -C "${REPO_DIR}" checkout "${REPO_BRANCH}" && git -C "${REPO_DIR}" pull
 fi
 
-echo "==> Installing Deploy UI dependencies"
-python3 -m pip install --quiet --upgrade pip
-python3 -m pip install --quiet fastapi "uvicorn[standard]" requests
+# Use a dedicated venv so we don't need write access to the system Python
+# (the Brev image's /opt/python-venv is not user-writable, and --user is not
+# allowed inside a venv). --system-site-packages lets us reuse anything already
+# installed (e.g. requests, jupyter).
+VENV="${HOME}/deploy-ui-venv"
+echo "==> Installing Deploy UI dependencies into ${VENV}"
+python3 -m venv --system-site-packages "${VENV}"
+"${VENV}/bin/pip" install --quiet --upgrade pip
+"${VENV}/bin/pip" install --quiet fastapi "uvicorn[standard]" requests
 
-# Optional: Jupyter for the notebook walkthrough (skip if already present).
-if ! command -v jupyter >/dev/null 2>&1; then
-  python3 -m pip install --quiet jupyterlab || true
+# Jupyter for the notebook walkthrough — reuse the system one if present, else
+# install into the venv.
+JUPYTER="$(command -v jupyter || true)"
+if [ -z "${JUPYTER}" ]; then
+  "${VENV}/bin/pip" install --quiet jupyterlab || true
+  JUPYTER="${VENV}/bin/jupyter"
 fi
 
 WEBUI_DIR="${REPO_DIR}/deploy/brev/webui"
@@ -39,16 +48,16 @@ WEBUI_DIR="${REPO_DIR}/deploy/brev/webui"
 echo "==> Starting the Deploy UI on :${UI_PORT}"
 if ! curl -s "http://localhost:${UI_PORT}/api/config" >/dev/null 2>&1; then
   cd "${WEBUI_DIR}"
-  nohup python3 -m uvicorn app:app --host 0.0.0.0 --port "${UI_PORT}" \
+  nohup "${VENV}/bin/python" -m uvicorn app:app --host 0.0.0.0 --port "${UI_PORT}" \
     > "${HOME}/deploy-ui.log" 2>&1 &
   echo "    Deploy UI log: ${HOME}/deploy-ui.log"
 fi
 
 # Optional: start Jupyter Lab rooted at the repo so the notebook opens directly.
-if command -v jupyter >/dev/null 2>&1 && ! curl -s http://localhost:8888 >/dev/null 2>&1; then
+if [ -x "${JUPYTER}" ] && ! curl -s http://localhost:8888 >/dev/null 2>&1; then
   echo "==> Starting Jupyter Lab on :8888 (rooted at the repo)"
   cd "${REPO_DIR}"
-  nohup jupyter lab --ip=0.0.0.0 --port=8888 --no-browser \
+  nohup "${JUPYTER}" lab --ip=0.0.0.0 --port=8888 --no-browser \
     --ServerApp.token='' --ServerApp.root_dir="${REPO_DIR}" \
     > "${HOME}/jupyter.log" 2>&1 &
 fi
