@@ -267,8 +267,9 @@ async function pollDataset(){
   const s = await (await fetch("/api/dataset/status")).json();
   $("#dsPhase").textContent = s.phase;
   $("#dsCounts").textContent =
-    `downloaded ${s.downloaded} · ingested ${s.ingested} · failed ${s.failed} · ${s.chunks} chunks · ${s.elapsed}s`;
-  const pct = s.total ? Math.round(100*(s.ingested+s.failed)/s.total) : (s.phase==="downloading"?8:0);
+    `downloaded ${s.downloaded} · uploaded ${s.uploaded||0}/${s.total||0} · ingested ${s.ingested} · failed ${s.failed} · ${s.chunks} chunks · ${s.elapsed}s`;
+  const pct = s.total ? Math.round(100*(s.ingested+s.failed)/s.total)
+                      : (s.phase==="downloading" ? 8 : 0);
   $("#dsProg").style.width = pct + "%";
   if (s.sample_q && !$("#q").value) $("#q").value = s.sample_q;
   if (s.ingested || s.chunks){ $("#stats").classList.remove("hidden");

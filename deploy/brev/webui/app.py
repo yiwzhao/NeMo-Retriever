@@ -284,7 +284,7 @@ async def ingest(request: Request) -> JSONResponse:
 sys.path.insert(0, str(HERE.parent))
 import download_dataset as dd  # noqa: E402  (deploy/brev/download_dataset.py)
 
-_ds = {"phase": "idle", "mode": None, "downloaded": 0, "ingested": 0,
+_ds = {"phase": "idle", "mode": None, "downloaded": 0, "uploaded": 0, "ingested": 0,
        "failed": 0, "chunks": 0, "total": 0, "elapsed": 0, "sample_q": None}
 _ds_log: list[str] = []
 _ds_lock = threading.Lock()
@@ -333,7 +333,7 @@ def _run_dataset(mode: str) -> None:
     t0 = time.monotonic()
     with _ds_lock:
         _ds_log.clear()
-        _ds.update(phase="downloading", mode=mode, downloaded=0, ingested=0,
+        _ds.update(phase="downloading", mode=mode, downloaded=0, uploaded=0, ingested=0,
                    failed=0, chunks=0, total=0, elapsed=0, sample_q=None)
     _dlog(f"Downloading T2-RAGBench [{dd.MODES[mode]['desc']}] @ {dd.REVISION[:12]}")
     try:
@@ -368,7 +368,28 @@ def _run_dataset(mode: str) -> None:
         ).json()
         jid = job["job_id"]
         wanted = set()
-        for p, q, a in records:
+
+        def _refresh() -> int:
+            """Pull job doc statuses into the counters; return terminal count."""
+            try:
+                docs = requests.get(f"{RETRIEVER_URL}/v1/ingest/job/{jid}/documents",
+                                    params={"limit": 20000}, timeout=180).json()
+            except Exception:  # noqa: BLE001
+                return 0
+            items = docs.get("items", [])
+            with _ds_lock:
+                _ds.update(
+                    ingested=sum(1 for d in items if d.get("status") == "completed"),
+                    failed=sum(1 for d in items if d.get("status") == "failed") + upload_failed,
+                    chunks=sum((d.get("result_rows") or 0) for d in items),
+                    elapsed=int(time.monotonic() - t0),
+                )
+            return sum(1 for d in items
+                       if d.get("document_id") in wanted and d.get("status") in ("completed", "failed"))
+
+        # Upload (progress shown live). The service ingests docs as they arrive,
+        # so we refresh the counters during upload too — not just after.
+        for idx, (p, q, a) in enumerate(records, 1):
             meta = {"filename": p.name, "content_type": "application/pdf",
                     "metadata": {"dataset": "t2-ragbench", "question": q, "answer": a}}
             try:
@@ -383,22 +404,13 @@ def _run_dataset(mode: str) -> None:
                 upload_failed += 1
                 _dlog(f"upload failed {p.name}: {exc}")
             with _ds_lock:
-                _ds["elapsed"] = int(time.monotonic() - t0)
+                _ds.update(uploaded=idx, elapsed=int(time.monotonic() - t0))
+            if idx % 10 == 0:
+                _refresh()
 
         deadline = time.monotonic() + (3600 if mode == "quick" else 6 * 3600)
         while time.monotonic() < deadline:
-            docs = requests.get(f"{RETRIEVER_URL}/v1/ingest/job/{jid}/documents",
-                                params={"limit": 20000}, timeout=180).json()
-            items = docs.get("items", [])
-            ing = sum(1 for d in items if d.get("status") == "completed")
-            fail = sum(1 for d in items if d.get("status") == "failed")
-            ch = sum((d.get("result_rows") or 0) for d in items)
-            with _ds_lock:
-                _ds.update(ingested=ing, failed=fail + upload_failed, chunks=ch,
-                           elapsed=int(time.monotonic() - t0))
-            terminal = sum(1 for d in items
-                           if d.get("document_id") in wanted and d.get("status") in ("completed", "failed"))
-            if terminal >= len(wanted):
+            if _refresh() >= len(wanted):
                 break
             time.sleep(3)
         with _ds_lock:
