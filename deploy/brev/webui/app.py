@@ -320,10 +320,8 @@ def _collect_records(mode: str):
                 qa.setdefault(key, {"question": r.get("question"),
                                     "answer": r.get("original_answer") or r.get("program_answer")})
                 qa.setdefault(os.path.splitext(key)[0], qa[key])
-        pdfdir = base / "pdf"
-        if not pdfdir.is_dir():
-            continue
-        for p in sorted(pdfdir.glob("*.pdf")):
+        # PDFs are nested under the split dir (e.g. dev/pdf/**); glob recursively.
+        for p in sorted(base.rglob("*.pdf")):
             if str(p) in seen:
                 continue
             seen.add(str(p))

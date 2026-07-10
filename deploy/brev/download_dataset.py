@@ -27,6 +27,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 REPO_ID = "G4KMU/t2-ragbench"
 # Pinned so the corpus never shifts under the benchmark.
@@ -56,8 +57,9 @@ def hf_download(mode: str = "quick", log=print) -> pathlib.Path:
     include = MODES[mode]["include"]
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
-    hf = shutil.which("hf")
-    if hf:
+    # `hf` may live next to the interpreter (venv) even when not on PATH.
+    hf = shutil.which("hf") or shutil.which("hf", path=os.path.dirname(sys.executable))
+    if hf and os.path.exists(hf):
         cmd = [hf, "download", REPO_ID, "--repo-type", "dataset",
                "--revision", REVISION, "--local-dir", str(DATASET_DIR)]
         for pat in include or []:
@@ -90,7 +92,7 @@ def main() -> None:
     hf_download(args.mode)
     for subset, split in SPLITS[args.mode]:
         d = split_dir(subset, split)
-        n = len(list((d / "pdf").glob("*.pdf"))) if (d / "pdf").is_dir() else 0
+        n = len(list(d.rglob("*.pdf")))
         print(f"  {subset}/{split}: {n} PDFs, metadata.jsonl={'yes' if (d/'metadata.jsonl').is_file() else 'no'}")
 
 
