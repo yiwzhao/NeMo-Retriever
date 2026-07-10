@@ -11,4 +11,5 @@ NVIDIA / AIDP retrieval half of the **AIDP × tensormesh — CacheBlend on Brev*
 **This retriever** → retrieved context → `cacheblend-inf-stack` engine (generation + CacheBlend) → dual-chat UI.
 Retrieved context must be **segmented + pre-tokenized** so CacheBlend can reuse non-prefix KV.
 
-📋 Project hub: FD / Partners / NVIDIA → *AIDP × tensormesh — CacheBlend on Brev*.
+📋 Project hub: Partners / NVIDIA → *AIDP × tensormesh — CacheBlend on Brev*.
+<img width="1711" height="1180" alt="image" src="https://github.com/user-attachments/assets/619b7faa-2f6e-43f1-b8d0-3fcd1f0411a1" />
