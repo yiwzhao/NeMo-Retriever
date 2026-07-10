@@ -370,13 +370,24 @@ def _run_dataset(mode: str) -> None:
         wanted = set()
 
         def _refresh() -> int:
-            """Pull job doc statuses into the counters; return terminal count."""
+            """Pull job doc statuses into the counters; return terminal count.
+            Pages the endpoint (server caps `limit` at 1000)."""
+            items = []
+            offset = 0
             try:
-                docs = requests.get(f"{RETRIEVER_URL}/v1/ingest/job/{jid}/documents",
-                                    params={"limit": 20000}, timeout=180).json()
+                while True:
+                    page = requests.get(
+                        f"{RETRIEVER_URL}/v1/ingest/job/{jid}/documents",
+                        params={"limit": 1000, "offset": offset}, timeout=180,
+                    ).json()
+                    batch = page.get("items", [])
+                    items.extend(batch)
+                    total = int(page.get("total_filtered", page.get("total", len(items))))
+                    offset += len(batch)
+                    if not batch or offset >= total:
+                        break
             except Exception:  # noqa: BLE001
                 return 0
-            items = docs.get("items", [])
             with _ds_lock:
                 _ds.update(
                     ingested=sum(1 for d in items if d.get("status") == "completed"),
