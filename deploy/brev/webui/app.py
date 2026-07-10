@@ -298,35 +298,34 @@ def _dlog(msg: str) -> None:
 
 
 def _collect_records(mode: str):
-    """Return [(pdf_path, question, answer)] for the mode, reading QA + target
-    file_name from each split's metadata.jsonl."""
+    """Return [(pdf_path, question, answer)] — metadata-driven. Each split's
+    metadata.jsonl has a `file_name` (e.g. 'pdf/V/2008/page_17.pdf') relative to
+    the split dir; resolve it to a PDF and take the QA from the same record.
+    Deduped by resolved path (a document can have several questions)."""
     records, seen = [], set()
     for subset, split in dd.SPLITS[mode]:
-        base = dd.split_dir(subset, split)
-        qa = {}
+        base = dd.split_dir(subset, split)             # data/<subset>/<split>
+        subset_dir = dd.DATASET_DIR / "data" / subset  # data/<subset>
         meta = base / "metadata.jsonl"
-        if meta.is_file():
-            for line in meta.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    r = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                fn = r.get("file_name")
-                if not fn:
-                    continue
-                key = os.path.basename(str(fn))
-                qa.setdefault(key, {"question": r.get("question"),
-                                    "answer": r.get("original_answer") or r.get("program_answer")})
-                qa.setdefault(os.path.splitext(key)[0], qa[key])
-        # PDFs are nested under the split dir (e.g. dev/pdf/**); glob recursively.
-        for p in sorted(base.rglob("*.pdf")):
-            if str(p) in seen:
+        if not meta.is_file():
+            continue
+        for line in meta.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fn = r.get("file_name")
+            if not fn:
+                continue
+            # file_name is relative to the split dir; fall back to the subset dir.
+            p = next((c for c in (base / fn, subset_dir / fn) if c.is_file()), None)
+            if p is None or str(p) in seen:
                 continue
             seen.add(str(p))
-            m = qa.get(p.name) or qa.get(p.stem) or {}
-            records.append((p, m.get("question"), m.get("answer")))
+            records.append((p, r.get("question"),
+                            r.get("original_answer") or r.get("program_answer")))
     return records
 
 
