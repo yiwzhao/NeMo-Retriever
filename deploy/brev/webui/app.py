@@ -24,6 +24,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -164,6 +165,14 @@ def config() -> dict:
     return {"notebook_url": NOTEBOOK_URL, "sample_pdf": SAMPLE_PDF, "corpus_size": len(MINI_CORPUS)}
 
 
+@app.get("/THIRD_PARTY_DATA.md", response_class=HTMLResponse)
+def third_party_data() -> HTMLResponse:
+    md = HERE.parent / "THIRD_PARTY_DATA.md"
+    text = md.read_text(encoding="utf-8") if md.is_file() else "Not found."
+    return HTMLResponse(f"<pre style='white-space:pre-wrap;font-family:monospace;padding:24px;"
+                        f"background:#0b0d0b;color:#e8ece6'>{text}</pre>")
+
+
 # ── deploy ───────────────────────────────────────────────────────────────────
 @app.post("/api/deploy")
 async def deploy(request: Request) -> JSONResponse:
@@ -269,6 +278,177 @@ async def ingest(request: Request) -> JSONResponse:
         return JSONResponse(_ingest_files(files))
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ── T2-RAGBench dataset: download + batch ingest with progress ───────────────
+sys.path.insert(0, str(HERE.parent))
+import download_dataset as dd  # noqa: E402  (deploy/brev/download_dataset.py)
+
+_ds = {"phase": "idle", "mode": None, "downloaded": 0, "ingested": 0,
+       "failed": 0, "chunks": 0, "total": 0, "elapsed": 0, "sample_q": None}
+_ds_log: list[str] = []
+_ds_lock = threading.Lock()
+
+
+def _dlog(msg: str) -> None:
+    with _ds_lock:
+        _ds_log.append(str(msg))
+        if len(_ds_log) > 4000:
+            del _ds_log[: len(_ds_log) - 4000]
+
+
+def _collect_records(mode: str):
+    """Return [(pdf_path, question, answer)] for the mode, reading QA + target
+    file_name from each split's metadata.jsonl."""
+    records, seen = [], set()
+    for subset, split in dd.SPLITS[mode]:
+        base = dd.split_dir(subset, split)
+        qa = {}
+        meta = base / "metadata.jsonl"
+        if meta.is_file():
+            for line in meta.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                fn = r.get("file_name")
+                if not fn:
+                    continue
+                key = os.path.basename(str(fn))
+                qa.setdefault(key, {"question": r.get("question"),
+                                    "answer": r.get("original_answer") or r.get("program_answer")})
+                qa.setdefault(os.path.splitext(key)[0], qa[key])
+        pdfdir = base / "pdf"
+        if not pdfdir.is_dir():
+            continue
+        for p in sorted(pdfdir.glob("*.pdf")):
+            if str(p) in seen:
+                continue
+            seen.add(str(p))
+            m = qa.get(p.name) or qa.get(p.stem) or {}
+            records.append((p, m.get("question"), m.get("answer")))
+    return records
+
+
+def _run_dataset(mode: str) -> None:
+    t0 = time.monotonic()
+    with _ds_lock:
+        _ds_log.clear()
+        _ds.update(phase="downloading", mode=mode, downloaded=0, ingested=0,
+                   failed=0, chunks=0, total=0, elapsed=0, sample_q=None)
+    _dlog(f"Downloading T2-RAGBench [{dd.MODES[mode]['desc']}] @ {dd.REVISION[:12]}")
+    try:
+        dd.hf_download(mode, log=_dlog)
+    except Exception as exc:  # noqa: BLE001
+        _dlog(f"download failed: {exc}")
+        with _ds_lock:
+            _ds.update(phase="failed", elapsed=int(time.monotonic() - t0))
+        return
+
+    records = _collect_records(mode)
+    with _ds_lock:
+        _ds.update(phase="ingesting", downloaded=len(records), total=len(records))
+        for _p, q, _a in records:
+            if q:
+                _ds["sample_q"] = q
+                break
+    _dlog(f"Downloaded {len(records)} PDFs. Ingesting…")
+    if not records:
+        with _ds_lock:
+            _ds.update(phase="failed")
+        _dlog("No PDFs found after download.")
+        return
+
+    upload_failed = 0
+    try:
+        job = requests.post(
+            f"{RETRIEVER_URL}/v1/ingest/job",
+            json={"expected_documents": len(records), "label": f"t2ragbench-{mode}",
+                  "metadata": {}, "retain_results": False},
+            timeout=120,
+        ).json()
+        jid = job["job_id"]
+        wanted = set()
+        for p, q, a in records:
+            meta = {"filename": p.name, "content_type": "application/pdf",
+                    "metadata": {"dataset": "t2-ragbench", "question": q, "answer": a}}
+            try:
+                with open(p, "rb") as fh:
+                    up = requests.post(
+                        f"{RETRIEVER_URL}/v1/ingest/job/{jid}/document",
+                        files={"file": (p.name, fh, "application/pdf")},
+                        data={"metadata": json.dumps(meta)}, timeout=300,
+                    ).json()
+                wanted.add(up["document_id"])
+            except Exception as exc:  # noqa: BLE001
+                upload_failed += 1
+                _dlog(f"upload failed {p.name}: {exc}")
+            with _ds_lock:
+                _ds["elapsed"] = int(time.monotonic() - t0)
+
+        deadline = time.monotonic() + (3600 if mode == "quick" else 6 * 3600)
+        while time.monotonic() < deadline:
+            docs = requests.get(f"{RETRIEVER_URL}/v1/ingest/job/{jid}/documents",
+                                params={"limit": 20000}, timeout=180).json()
+            items = docs.get("items", [])
+            ing = sum(1 for d in items if d.get("status") == "completed")
+            fail = sum(1 for d in items if d.get("status") == "failed")
+            ch = sum((d.get("result_rows") or 0) for d in items)
+            with _ds_lock:
+                _ds.update(ingested=ing, failed=fail + upload_failed, chunks=ch,
+                           elapsed=int(time.monotonic() - t0))
+            terminal = sum(1 for d in items
+                           if d.get("document_id") in wanted and d.get("status") in ("completed", "failed"))
+            if terminal >= len(wanted):
+                break
+            time.sleep(3)
+        with _ds_lock:
+            _ds.update(phase="done", elapsed=int(time.monotonic() - t0))
+        _dlog(f"Done — ingested {_ds['ingested']}, failed {_ds['failed']}, {_ds['chunks']} chunks in {_ds['elapsed']}s")
+    except Exception as exc:  # noqa: BLE001
+        _dlog(f"ingest error: {exc}")
+        with _ds_lock:
+            _ds.update(phase="failed", elapsed=int(time.monotonic() - t0))
+
+
+@app.post("/api/dataset")
+async def dataset(request: Request) -> JSONResponse:
+    body = await request.json()
+    mode = (body or {}).get("mode", "quick")
+    if mode not in dd.MODES:
+        return JSONResponse({"error": f"unknown mode {mode}"}, status_code=400)
+    with _ds_lock:
+        if _ds["phase"] in ("downloading", "ingesting"):
+            return JSONResponse({"error": "A dataset run is already in progress."}, status_code=409)
+    threading.Thread(target=_run_dataset, args=(mode,), daemon=True).start()
+    return JSONResponse({"started": True, "mode": mode})
+
+
+@app.get("/api/dataset/status")
+def dataset_status() -> dict:
+    with _ds_lock:
+        return dict(_ds)
+
+
+@app.get("/api/dataset/logs")
+def dataset_logs() -> StreamingResponse:
+    def gen():
+        idx = 0
+        while True:
+            with _ds_lock:
+                new = _ds_log[idx:]
+                idx = len(_ds_log)
+                phase = _ds["phase"]
+            for ln in new:
+                yield f"data: {json.dumps({'line': ln})}\n\n"
+            if phase in ("done", "failed") and idx >= len(_ds_log):
+                yield f"event: end\ndata: {json.dumps({'phase': phase})}\n\n"
+                return
+            time.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/api/query")

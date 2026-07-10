@@ -46,8 +46,13 @@ whole bootstrap for you and gives you an ingest + query playground when it's don
 2. Paste your **NGC API key** and click **Deploy Launchable**.
 3. Watch the live activity log while it installs k3s + the GPU stack + NeMo
    Retriever (first run pulls weights, 10–30 min).
-4. When it's live, use the built-in **ingest + query playground** (single PDF or a
-   6-PDF corpus), or open the full notebook for the deeper walkthrough.
+4. When it's live, use the built-in **ingest + query playground**:
+   - **Just 1 PDF** — the bundled multimodal sample (fastest).
+   - **Quick Demo** *(default)* — downloads & ingests the T²-RAGBench **FinQA dev**
+     split (~72 MB) at a pinned revision; shows download/ingest/failed/chunk counts.
+   - **Full Benchmark** — the whole T²-RAGBench corpus (2.98 GB, 7,353 PDFs), on demand.
+
+   Dataset attribution & licensing: [`THIRD_PARTY_DATA.md`](./THIRD_PARTY_DATA.md).
 
 The Deploy UI also runs a self-healing `kubectl port-forward` so `localhost:7670`
 reaches the in-cluster service, and auto-detects an already-live stack if you
@@ -200,7 +205,9 @@ kubectl delete nimservice,nimcache -n retriever --all   # NIMCaches are kept by 
 | File | Purpose |
 |------|---------|
 | [`setup.sh`](./setup.sh) | Brev setup script: clones the repo and starts the Deploy UI + Jupyter (no secret). |
-| [`webui/`](./webui/) | One-click Deploy UI (FastAPI): NGC key → runs `bootstrap.sh` with a live log → ingest + query playground. |
+| [`webui/`](./webui/) | One-click Deploy UI (FastAPI): NGC key → runs `bootstrap.sh` with a live log → ingest (1 PDF / Quick Demo / Full Benchmark) + query playground. |
+| [`download_dataset.py`](./download_dataset.py) | Downloads T²-RAGBench (pinned revision) via `hf download`; `quick` (FinQA dev) / `full` modes. |
+| [`THIRD_PARTY_DATA.md`](./THIRD_PARTY_DATA.md) | Attribution + licensing for the T²-RAGBench dataset and its sources. |
 | [`bootstrap.sh`](./bootstrap.sh) | End-to-end single-node install (k3s + GPU runtime + GPU Operator + NIM Operator + chart). |
 | [`values-brev-core.yaml`](./values-brev-core.yaml) | Helm override: core RAG only, optional NIMs off. |
 | [`notebooks/nemo_retriever_quickstart.ipynb`](./notebooks/nemo_retriever_quickstart.ipynb) | Drives the deployed service: single doc → query → answer → scaled multi-doc corpus. |

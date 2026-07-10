@@ -117,12 +117,24 @@ SPDX-License-Identifier: Apache-2.0
       <div class="stat"><b id="stHits">–</b><span>Last query hits</span></div>
     </div>
 
-    <label>1 · Ingest sample data</label>
+    <label>1 · Ingest data</label>
     <div class="row">
-      <button id="ingestSample" class="secondary">Ingest 1 PDF (fast)</button>
-      <button id="ingestCorpus" class="secondary">Ingest sample corpus (<span id="corpusN">6</span> PDFs)</button>
-      <span class="pill" id="ingestStatus"></span>
+      <button id="modeQuick">★ Quick Demo — FinQA dev (~72 MB)</button>
+      <button id="modeFull" class="secondary">Full Benchmark (2.98 GB · 7,353 PDFs)</button>
+      <button id="ingestSample" class="secondary">Just 1 PDF</button>
     </div>
+    <div class="hint">Quick Demo (default) downloads &amp; ingests the T²-RAGBench FinQA dev split.
+      Full Benchmark is the whole 7,353-PDF corpus — run on demand.
+      <a href="THIRD_PARTY_DATA.md" target="_blank">data attribution</a></div>
+    <div id="dsPanel" class="hidden" style="margin-top:12px">
+      <div class="bar"><i id="dsProg"></i></div>
+      <div class="row" style="justify-content:space-between">
+        <span class="pill" id="dsPhase">…</span>
+        <span class="pill" id="dsCounts"></span>
+      </div>
+      <div class="log" id="dsLog" style="height:170px"></div>
+    </div>
+    <span class="pill" id="ingestStatus"></span>
 
     <label>2 · Ask a question</label>
     <div class="row">
@@ -143,7 +155,7 @@ let cfg = { notebook_url:"", corpus_size:6 };
 let t0 = 0, timer = null;
 
 fetch("/api/config").then(r=>r.json()).then(c=>{
-  cfg = c; $("#corpusN").textContent = c.corpus_size;
+  cfg = c;
   $("#nbHint").innerHTML = c.notebook_url
     ? `Open the full walkthrough (single doc + a scaled dataset) in the notebook: <a href="${c.notebook_url}" target="_blank">nemo_retriever_quickstart.ipynb ▸</a>`
     : `Open the full walkthrough in Jupyter: <code>deploy/brev/notebooks/nemo_retriever_quickstart.ipynb</code>`;
@@ -220,6 +232,7 @@ async function onLive(){
   $("#healthDot").innerHTML = `<span class="bad-dot">● not reachable — NIMs may still be building</span>`;
 }
 
+// single sample PDF (unchanged path)
 async function ingest(which, btn){
   $("#ingestStatus").textContent = "ingesting… (first run builds engines; can take a few min)";
   btn.disabled = true;
@@ -233,7 +246,45 @@ async function ingest(which, btn){
   $("#stDocs").textContent = ok; $("#stRows").textContent = d.total_rows;
 }
 $("#ingestSample").onclick = e => ingest("sample", e.target);
-$("#ingestCorpus").onclick = e => ingest("corpus", e.target);
+
+// T2-RAGBench dataset modes: quick (default) / full
+let dsPoll = null;
+async function startDataset(mode){
+  if (mode==="full" && !confirm("Full Benchmark downloads 2.98 GB and ingests 7,353 PDFs — this takes a long time. Continue?")) return;
+  $("#modeQuick").disabled = true; $("#modeFull").disabled = true;
+  $("#dsPanel").classList.remove("hidden"); $("#dsLog").innerHTML="";
+  const r = await fetch("/api/dataset",{method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({mode})});
+  const d = await r.json();
+  if (!r.ok){ $("#dsPhase").textContent = d.error||"failed"; $("#modeQuick").disabled=false; $("#modeFull").disabled=false; return; }
+  const es = new EventSource("/api/dataset/logs");
+  es.onmessage = e => { const {line}=JSON.parse(e.data); const div=document.createElement("div");
+    div.textContent=line; $("#dsLog").appendChild(div); $("#dsLog").scrollTop=$("#dsLog").scrollHeight; };
+  es.addEventListener("end", () => es.close());
+  dsPoll = setInterval(pollDataset, 1500); pollDataset();
+}
+async function pollDataset(){
+  const s = await (await fetch("/api/dataset/status")).json();
+  $("#dsPhase").textContent = s.phase;
+  $("#dsCounts").textContent =
+    `downloaded ${s.downloaded} · ingested ${s.ingested} · failed ${s.failed} · ${s.chunks} chunks · ${s.elapsed}s`;
+  const pct = s.total ? Math.round(100*(s.ingested+s.failed)/s.total) : (s.phase==="downloading"?8:0);
+  $("#dsProg").style.width = pct + "%";
+  if (s.sample_q && !$("#q").value) $("#q").value = s.sample_q;
+  if (s.ingested || s.chunks){ $("#stats").classList.remove("hidden");
+    $("#stDocs").textContent = s.ingested; $("#stRows").textContent = s.chunks; }
+  if (s.phase==="done" || s.phase==="failed"){
+    clearInterval(dsPoll); $("#modeQuick").disabled=false; $("#modeFull").disabled=false;
+    $("#dsProg").style.width = "100%";
+  }
+}
+$("#modeQuick").onclick = () => startDataset("quick");
+$("#modeFull").onclick = () => startDataset("full");
+// resume the panel if a run is already going (page reload)
+fetch("/api/dataset/status").then(r=>r.json()).then(s=>{
+  if (s.phase==="downloading" || s.phase==="ingesting"){ $("#dsPanel").classList.remove("hidden");
+    $("#modeQuick").disabled=true; $("#modeFull").disabled=true; dsPoll=setInterval(pollDataset,1500); pollDataset(); }
+});
 
 $("#askBtn").onclick = async () => {
   const q = $("#q").value.trim(); $("#err3").textContent=""; $("#hits").innerHTML="";

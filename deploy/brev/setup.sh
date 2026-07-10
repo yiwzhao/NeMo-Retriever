@@ -33,7 +33,7 @@ VENV="${HOME}/deploy-ui-venv"
 echo "==> Installing Deploy UI dependencies into ${VENV}"
 python3 -m venv --system-site-packages "${VENV}"
 "${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet fastapi "uvicorn[standard]" requests
+"${VENV}/bin/pip" install --quiet fastapi "uvicorn[standard]" requests huggingface_hub
 
 # Jupyter for the notebook walkthrough — reuse the system one if present, else
 # install into the venv.
