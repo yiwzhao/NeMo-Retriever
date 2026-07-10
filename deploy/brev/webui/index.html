@@ -297,9 +297,13 @@ $("#askBtn").onclick = async () => {
   if (d.error){ $("#err3").textContent = d.error; return; }
   $("#stHits").textContent = d.hits.length;
   if (!d.hits.length){ $("#hits").innerHTML = `<div class="hint">No hits — ingest some data first.</div>`; return; }
-  $("#hits").innerHTML = d.hits.map(h => `
-    <div class="hit"><div class="meta">${h.source||""} · score ${(+h.score).toFixed(3)}</div>
-    <div>${(h.text||"").slice(0,320).replace(/</g,"&lt;")}</div></div>`).join("");
+  // hits come back best-first; the raw value is a distance (lower = closer),
+  // so show a similarity (higher = better) to match intuition.
+  $("#hits").innerHTML = d.hits.map((h,i) => {
+    const sim = 1/(1+Math.max(+h.score||0, 0));
+    return `<div class="hit"><div class="meta">#${i+1} · ${h.source||""} · similarity ${sim.toFixed(3)}</div>
+    <div>${(h.text||"").slice(0,320).replace(/</g,"&lt;")}</div></div>`;
+  }).join("");
 };
 $("#q").addEventListener("keydown", e => { if(e.key==="Enter") $("#askBtn").click(); });
 </script>
