@@ -479,21 +479,31 @@ async def query(request: Request) -> JSONResponse:
     if not q:
         return JSONResponse({"error": "Enter a query."}, status_code=400)
     try:
+        # Over-fetch, then dedupe by text so repeated ingests (the vectordb is
+        # append-only) don't show up as identical hits.
         r = requests.post(
             f"{RETRIEVER_URL}/v1/query",
-            json={"query": q, "top_k": top_k, "format": "hits"},
+            json={"query": q, "top_k": max(top_k * 4, 20), "format": "hits"},
             timeout=120,
         )
         if r.status_code != 200:
             return JSONResponse({"error": f"HTTP {r.status_code}: {r.text[:300]}"}, status_code=502)
         results = r.json().get("results", [])
         hits = results[0].get("hits", []) if results else []
-        out = [
-            {"score": h.get("score") or h.get("_distance"),
-             "source": (h.get("metadata", {}) or {}).get("source") or h.get("source"),
-             "text": h.get("text") or (h.get("metadata", {}) or {}).get("content", "")}
-            for h in hits
-        ]
+        out, seen = [], set()
+        for h in hits:
+            text = h.get("text") or (h.get("metadata", {}) or {}).get("content", "")
+            key = " ".join(str(text).split())[:200]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "score": h.get("score") or h.get("_distance"),
+                "source": (h.get("metadata", {}) or {}).get("source") or h.get("source"),
+                "text": text,
+            })
+            if len(out) >= top_k:
+                break
         return JSONResponse({"hits": out})
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
