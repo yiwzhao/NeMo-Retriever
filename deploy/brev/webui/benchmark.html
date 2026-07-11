@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NeMo Retriever — Benchmark</title>
+<style>
+  :root { --bg:#0b0d0b; --panel:#141714; --panel2:#1b1f1a; --line:#2a2f27;
+          --green:#76b900; --green2:#8fd400; --text:#e8ece6; --muted:#9aa295; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  a { color:var(--green2); }
+  .wrap { max-width:1180px; margin:0 auto; padding:32px 24px 80px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom:22px; }
+  .brand .logo { width:32px; height:32px; border-radius:8px; background:var(--green);
+                 display:grid; place-items:center; color:#0b0d0b; font-weight:800; }
+  .brand h1 { font-size:15px; letter-spacing:.14em; margin:0; text-transform:uppercase; }
+  .brand small { color:var(--muted); letter-spacing:.14em; }
+  .brand .sp { flex:1; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px 22px; margin-bottom:18px; }
+  h2 { font-size:26px; margin:0 0 6px; } h2 .g{ color:var(--green2); }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  select, input[type=number] { background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:9px; padding:10px 12px; font-size:14px; font-family:inherit; }
+  button { background:var(--green); color:#0b0d0b; border:0; border-radius:9px; font-weight:800;
+    letter-spacing:.04em; padding:11px 18px; font-size:13px; cursor:pointer; font-family:inherit; }
+  button.secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { color:var(--muted); font-size:13px; }
+  .log { background:#07080a; border:1px solid var(--line); border-radius:10px; padding:12px;
+    height:210px; overflow:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+    line-height:1.5; white-space:pre-wrap; color:#c7d0bf; margin-top:12px; }
+  .sec { margin-top:8px; }
+  .sec h3 { font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--green2);
+    margin:0 0 10px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+  table.kv { width:100%; border-collapse:collapse; font-size:13.5px; }
+  table.kv td { padding:5px 10px; border-bottom:1px solid #20241d; vertical-align:top; }
+  table.kv td.k { color:var(--muted); width:42%; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; }
+  table.kv td.v { color:var(--text); font-variant-numeric:tabular-nums; }
+  .cols { column-width:520px; column-gap:22px; }
+  .cols .sec { break-inside:avoid; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">◈</div>
+    <div><h1>NeMo Retriever · Benchmark</h1><small>raw run report (retrieval v1)</small></div>
+    <div class="sp"></div>
+    <a href="/">← Deploy UI</a>
+  </div>
+
+  <div class="card">
+    <h2>Run a <span class="g">benchmark</span></h2>
+    <div class="row" style="margin-top:12px">
+      <select id="mode"><option value="quick">quick · FinQA dev</option><option value="full">full · 7,353 PDFs</option></select>
+      <label class="pill">max QA <input id="maxqa" type="number" min="0" placeholder="all" style="width:90px"/></label>
+      <button id="runBtn">Run benchmark ▸</button>
+      <span class="pill" id="runPhase"></span>
+      <div class="sp" style="flex:1"></div>
+      <select id="runs"></select>
+      <button id="loadBtn" class="secondary">Load run</button>
+    </div>
+    <div class="log hidden" id="log"></div>
+  </div>
+
+  <div id="report"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+function fmt(v){
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString() : v;
+  return String(v);
+}
+// flatten a nested object into dotted key -> leaf value rows
+function leaves(obj, prefix=""){
+  const out=[];
+  for (const [k,v] of Object.entries(obj||{})){
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v==="object" && !Array.isArray(v)) out.push(...leaves(v,key));
+    else out.push([key, Array.isArray(v) ? JSON.stringify(v) : v]);
+  }
+  return out;
+}
+function section(title, obj){
+  const rows = leaves(obj).map(([k,v]) =>
+    `<tr><td class="k">${k}</td><td class="v">${fmt(v)}</td></tr>`).join("");
+  return `<div class="sec"><h3>${title}</h3><table class="kv">${rows}</table></div>`;
+}
+const ORDER = ["run_config","dataset_corpus","download","ingestion","retrieval",
+               "answer_quality","latency_throughput","resources","errors"];
+function render(summary){
+  const keys = [...new Set([...ORDER, ...Object.keys(summary)])].filter(k=>k in summary);
+  $("#report").innerHTML = `<div class="card"><div class="cols">` +
+    keys.map(k => section(k.replace(/_/g," ").toUpperCase(), summary[k])).join("") +
+    `</div></div>`;
+}
+
+async function loadRuns(sel){
+  const {runs=[]} = await (await fetch("/api/benchmark/runs")).json();
+  $("#runs").innerHTML = runs.length
+    ? runs.map(r=>`<option value="${r}">${r}</option>`).join("")
+    : `<option value="">no runs yet</option>`;
+  if (sel && runs.includes(sel)) $("#runs").value = sel;
+}
+async function loadSummary(run_id){
+  const url = run_id ? `/api/benchmark/summary?run_id=${encodeURIComponent(run_id)}` : "/api/benchmark/summary";
+  const r = await fetch(url);
+  if (!r.ok){ $("#report").innerHTML = `<div class="card pill">No completed runs yet. Run one above.</div>`; return; }
+  render(await r.json());
+}
+
+$("#runBtn").onclick = async () => {
+  const mode = $("#mode").value;
+  const maxqa = $("#maxqa").value ? parseInt($("#maxqa").value) : null;
+  $("#runBtn").disabled = true; $("#log").classList.remove("hidden"); $("#log").innerHTML="";
+  const r = await fetch("/api/benchmark",{method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({mode, max_qa: maxqa})});
+  const d = await r.json();
+  if (!r.ok){ $("#runPhase").textContent = d.error||"failed"; $("#runBtn").disabled=false; return; }
+  $("#runPhase").textContent = "running…";
+  const es = new EventSource("/api/benchmark/logs");
+  es.onmessage = e => { const {line}=JSON.parse(e.data); const div=document.createElement("div");
+    div.textContent=line; $("#log").appendChild(div); $("#log").scrollTop=$("#log").scrollHeight; };
+  es.addEventListener("end", async () => {
+    es.close(); $("#runBtn").disabled=false;
+    const s = await (await fetch("/api/benchmark/status")).json();
+    $("#runPhase").textContent = s.phase;
+    await loadRuns(s.run_id); await loadSummary(s.run_id);
+  });
+};
+$("#loadBtn").onclick = () => loadSummary($("#runs").value);
+
+// on load: resume a running benchmark, populate runs, show latest
+(async () => {
+  await loadRuns();
+  const s = await (await fetch("/api/benchmark/status")).json();
+  if (s.phase === "running"){
+    $("#runBtn").disabled=true; $("#log").classList.remove("hidden"); $("#runPhase").textContent="running…";
+    const es = new EventSource("/api/benchmark/logs");
+    es.onmessage = e => { const {line}=JSON.parse(e.data); const div=document.createElement("div");
+      div.textContent=line; $("#log").appendChild(div); $("#log").scrollTop=$("#log").scrollHeight; };
+    es.addEventListener("end", async () => { es.close(); $("#runBtn").disabled=false;
+      const st = await (await fetch("/api/benchmark/status")).json();
+      await loadRuns(st.run_id); await loadSummary(st.run_id); });
+  } else {
+    await loadSummary();
+  }
+})();
+</script>
+</body>
+</html>

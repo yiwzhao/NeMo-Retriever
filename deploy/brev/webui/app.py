@@ -471,6 +471,100 @@ def dataset_logs() -> StreamingResponse:
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# ── benchmark harness (retrieval-only v1) ────────────────────────────────────
+import benchmark as bench  # noqa: E402  (deploy/brev/webui/benchmark.py)
+
+_bench = {"phase": "idle", "run_id": None}
+_bench_log: list[str] = []
+_bench_lock = threading.Lock()
+
+
+def _bench_logfn(msg: str) -> None:
+    with _bench_lock:
+        _bench_log.append(str(msg))
+        if len(_bench_log) > 4000:
+            del _bench_log[: len(_bench_log) - 4000]
+
+
+def _run_bench(mode: str, max_qa) -> None:
+    with _bench_lock:
+        _bench_log.clear()
+        _bench.update(phase="running", run_id=None)
+    try:
+        summary = bench.run(mode, top_k=10, max_qa=max_qa, log=_bench_logfn)
+        with _bench_lock:
+            _bench.update(phase="done", run_id=summary["run_config"]["run_id"])
+    except Exception as exc:  # noqa: BLE001
+        _bench_logfn(f"ERROR: {exc}")
+        with _bench_lock:
+            _bench.update(phase="failed")
+
+
+@app.get("/benchmark", response_class=HTMLResponse)
+def benchmark_page() -> str:
+    return (HERE / "benchmark.html").read_text(encoding="utf-8")
+
+
+@app.post("/api/benchmark")
+async def benchmark_start(request: Request) -> JSONResponse:
+    body = await request.json()
+    mode = (body or {}).get("mode", "quick")
+    max_qa = (body or {}).get("max_qa")
+    if mode not in bench.dd.MODES:
+        return JSONResponse({"error": f"unknown mode {mode}"}, status_code=400)
+    with _bench_lock:
+        if _bench["phase"] == "running":
+            return JSONResponse({"error": "A benchmark is already running."}, status_code=409)
+    threading.Thread(target=_run_bench, args=(mode, max_qa), daemon=True).start()
+    return JSONResponse({"started": True})
+
+
+@app.get("/api/benchmark/status")
+def benchmark_status() -> dict:
+    with _bench_lock:
+        return dict(_bench)
+
+
+@app.get("/api/benchmark/logs")
+def benchmark_logs() -> StreamingResponse:
+    def gen():
+        idx = 0
+        while True:
+            with _bench_lock:
+                new = _bench_log[idx:]
+                idx = len(_bench_log)
+                phase = _bench["phase"]
+            for ln in new:
+                yield f"data: {json.dumps({'line': ln})}\n\n"
+            if phase in ("done", "failed") and idx >= len(_bench_log):
+                yield f"event: end\ndata: {json.dumps({'phase': phase})}\n\n"
+                return
+            time.sleep(0.5)
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/benchmark/runs")
+def benchmark_runs() -> dict:
+    runs = []
+    if bench.BENCH_DIR.is_dir():
+        for d in sorted(bench.BENCH_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if (d / "summary.json").is_file():
+                runs.append(d.name)
+    return {"runs": runs}
+
+
+@app.get("/api/benchmark/summary")
+def benchmark_summary(run_id: str = "") -> JSONResponse:
+    d = (bench.BENCH_DIR / run_id) if run_id else None
+    if not d or not (d / "summary.json").is_file():
+        cand = ([p for p in bench.BENCH_DIR.iterdir() if (p / "summary.json").is_file()]
+                if bench.BENCH_DIR.is_dir() else [])
+        if not cand:
+            return JSONResponse({"error": "no completed runs"}, status_code=404)
+        d = max(cand, key=lambda p: p.stat().st_mtime)
+    return JSONResponse(json.loads((d / "summary.json").read_text(encoding="utf-8")))
+
+
 @app.post("/api/query")
 async def query(request: Request) -> JSONResponse:
     body = await request.json()
