@@ -61,7 +61,8 @@ SPDX-License-Identifier: Apache-2.0
     <h2>Run a <span class="g">benchmark</span></h2>
     <div class="row" style="margin-top:12px">
       <select id="mode"><option value="quick">quick · FinQA dev</option><option value="full">full · 7,353 PDFs</option></select>
-      <label class="pill">max QA <input id="maxqa" type="number" min="0" placeholder="all" style="width:90px"/></label>
+      <label class="pill">retrieval max <input id="maxqa" type="number" min="0" placeholder="all" style="width:80px"/></label>
+      <label class="pill">QA sample <input id="qasample" type="number" min="0" value="100" style="width:70px"/></label>
       <button id="runBtn">Run benchmark ▸</button>
       <span class="pill" id="runPhase"></span>
       <div class="sp" style="flex:1"></div>
@@ -123,9 +124,10 @@ async function loadSummary(run_id){
 $("#runBtn").onclick = async () => {
   const mode = $("#mode").value;
   const maxqa = $("#maxqa").value ? parseInt($("#maxqa").value) : null;
+  const qasample = $("#qasample").value !== "" ? parseInt($("#qasample").value) : 100;
   $("#runBtn").disabled = true; $("#log").classList.remove("hidden"); $("#log").innerHTML="";
   const r = await fetch("/api/benchmark",{method:"POST",headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({mode, max_qa: maxqa})});
+    body: JSON.stringify({mode, max_qa: maxqa, qa_sample: qasample})});
   const d = await r.json();
   if (!r.ok){ $("#runPhase").textContent = d.error||"failed"; $("#runBtn").disabled=false; return; }
   $("#runPhase").textContent = "running…";

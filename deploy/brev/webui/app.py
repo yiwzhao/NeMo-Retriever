@@ -506,12 +506,12 @@ def _bench_logfn(msg: str) -> None:
             del _bench_log[: len(_bench_log) - 4000]
 
 
-def _run_bench(mode: str, max_qa) -> None:
+def _run_bench(mode: str, max_qa, qa_sample=100) -> None:
     with _bench_lock:
         _bench_log.clear()
         _bench.update(phase="running", run_id=None)
     try:
-        summary = bench.run(mode, top_k=10, max_qa=max_qa, log=_bench_logfn)
+        summary = bench.run(mode, top_k=10, max_qa=max_qa, qa_sample=qa_sample, log=_bench_logfn)
         with _bench_lock:
             _bench.update(phase="done", run_id=summary["run_config"]["run_id"])
     except Exception as exc:  # noqa: BLE001
@@ -530,12 +530,13 @@ async def benchmark_start(request: Request) -> JSONResponse:
     body = await request.json()
     mode = (body or {}).get("mode", "quick")
     max_qa = (body or {}).get("max_qa")
+    qa_sample = (body or {}).get("qa_sample", 100)
     if mode not in bench.dd.MODES:
         return JSONResponse({"error": f"unknown mode {mode}"}, status_code=400)
     with _bench_lock:
         if _bench["phase"] == "running":
             return JSONResponse({"error": "A benchmark is already running."}, status_code=409)
-    threading.Thread(target=_run_bench, args=(mode, max_qa), daemon=True).start()
+    threading.Thread(target=_run_bench, args=(mode, max_qa, qa_sample), daemon=True).start()
     return JSONResponse({"started": True})
 
 

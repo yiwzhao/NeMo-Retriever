@@ -33,12 +33,14 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import statistics
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections import Counter
 
 import requests
 
@@ -67,6 +69,46 @@ def _sha256(path: pathlib.Path) -> str:
         for block in iter(lambda: fh.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+_NUM_RE = re.compile(r"-?\(?\$?\s*\d[\d,]*(?:\.\d+)?\s*%?\)?")
+
+
+def _to_float(tok: str):
+    s = str(tok).strip()
+    neg = s.startswith("(")
+    s = re.sub(r"[(),$%\s]", "", s)
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _numbers(text: str):
+    out = []
+    for m in _NUM_RE.finditer(text or ""):
+        v = _to_float(m.group())
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def _norm(s) -> str:
+    return re.sub(r"[\s$,%]", "", str(s).lower()).strip()
+
+
+def _within(a, b, tol=0.005) -> bool:
+    return abs(a - b) <= tol * max(abs(b), 1e-9)
+
+
+def _token_f1(pred, gold) -> float:
+    pt, gt = Counter(str(pred).lower().split()), Counter(str(gold).lower().split())
+    common = sum((pt & gt).values())
+    if not pt or not gt or common == 0:
+        return 0.0
+    prec, rec = common / sum(pt.values()), common / sum(gt.values())
+    return round(2 * prec * rec / (prec + rec), 4)
 
 
 def _all_docs(jid: str):
@@ -340,8 +382,140 @@ def agg_resources(path: pathlib.Path):
     return out
 
 
+# ── answer-quality eval (external LLM; gated + sampled) ──────────────────────
+_QA_SYS = ("You are a financial QA assistant. Answer strictly from the provided context. "
+           "Respond with ONLY the final answer value (a number where applicable) — no words, "
+           "units, or explanation.")
+QA_PROMPT_VERSION = "finqa-numeric-v1"
+
+
+def qa_eval(qa, log, artifacts, sample=100, top_k=5):
+    key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("LLM_API_KEY")
+    if not key:
+        return {"status": "skipped — set NVIDIA_API_KEY (build.nvidia.com) to enable answer-quality eval"}
+    api_base = os.environ.get("LLM_API_BASE", "https://integrate.api.nvidia.com/v1")
+    model = os.environ.get("LLM_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
+    price_in = float(os.environ.get("LLM_PRICE_IN_PER_M", 0) or 0)
+    price_out = float(os.environ.get("LLM_PRICE_OUT_PER_M", 0) or 0)
+
+    pool = [q for q in qa if q.get("gold_sha") and q.get("answer") not in (None, "")]
+    if sample:
+        pool = pool[:sample]
+
+    c = Counter()
+    gen_lat, in_tok, out_tok = [], [], []
+    f = open(artifacts / "qa-results.jsonl", "w", encoding="utf-8")
+    for n, q in enumerate(pool, 1):
+        c["attempted"] += 1
+        ctx_sources, ctx_text = set(), []
+        try:
+            hits = (requests.post(f"{RETRIEVER_URL}/v1/query",
+                                  json={"query": q["question"], "top_k": top_k, "format": "hits"},
+                                  timeout=120).json().get("results") or [{}])[0].get("hits", [])
+            for h in hits:
+                t = h.get("text") or (h.get("metadata", {}) or {}).get("content", "")
+                src = h.get("source") or (h.get("metadata", {}) or {}).get("source") or ""
+                s = src[:-4] if src.endswith(".pdf") else src
+                if len(s) == 64:
+                    ctx_sources.add(s)
+                if t:
+                    ctx_text.append(str(t))
+        except Exception as exc:  # noqa: BLE001
+            c["failed"] += 1
+            log(f"qa retrieve failed: {exc}")
+            continue
+        context = "\n\n".join(ctx_text)[:6000]
+        try:
+            t0 = time.time()
+            resp = requests.post(f"{api_base}/chat/completions",
+                                 headers={"Authorization": f"Bearer {key}"},
+                                 json={"model": model, "temperature": 0, "max_tokens": 64, "stream": False,
+                                       "messages": [{"role": "system", "content": _QA_SYS},
+                                                    {"role": "user", "content":
+                                                     f"Context:\n{context}\n\nQuestion: {q['question']}\n\nFinal answer:"}]},
+                                 timeout=120)
+            gen_ms = (time.time() - t0) * 1000
+            if resp.status_code != 200:
+                c["failed"] += 1
+                log(f"llm http {resp.status_code}: {resp.text[:120]}")
+                continue
+            j = resp.json()
+            ans = (j["choices"][0]["message"].get("content") or "").strip()
+            u = j.get("usage", {}) or {}
+            in_tok.append(u.get("prompt_tokens", 0))
+            out_tok.append(u.get("completion_tokens", 0))
+            gen_lat.append(gen_ms)
+        except Exception as exc:  # noqa: BLE001
+            c["failed"] += 1
+            log(f"llm call failed: {exc}")
+            continue
+        c["completed"] += 1
+
+        gold = str(q["answer"])
+        gnums = _numbers(gold)
+        gold_num = gnums[0] if gnums else None
+        pnums = _numbers(ans)
+        primary = pnums[0] if pnums else None
+        is_num = gold_num is not None
+        norm_em = _norm(ans) == _norm(gold)
+        num_em = num_acc = False
+        f1 = None
+        if not ans:
+            c["empty"] += 1
+        if any(w in ans.lower() for w in ("cannot", "not provided", "no information", "unable", "n/a")):
+            c["refusal"] += 1
+        if is_num:
+            c["numeric_gold"] += 1
+            if primary is None:
+                c["unparseable"] += 1
+            else:
+                num_em = round(primary, 4) == round(gold_num, 4)
+                num_acc = _within(primary, gold_num)
+        else:
+            f1 = _token_f1(ans, gold)
+        correct = num_acc if is_num else (norm_em or (f1 or 0) >= 0.5)
+        source_hit = q["gold_sha"] in ctx_sources
+        joint = bool(correct and source_hit)
+        c["numeric_em"] += int(num_em)
+        c["numeric_acc"] += int(num_acc)
+        c["norm_em"] += int(norm_em)
+        c["source_hit"] += int(source_hit)
+        c["joint"] += int(joint)
+        f.write(json.dumps({"id": q["id"], "gold": gold, "pred": ans[:200], "is_numeric": is_num,
+                            "numeric_em": num_em, "numeric_acc": num_acc, "norm_em": norm_em,
+                            "token_f1": f1, "source_hit": source_hit, "joint": joint,
+                            "gen_ms": round(gen_ms, 1)}) + "\n")
+        if n % 25 == 0:
+            log(f"  QA {n}/{len(pool)}")
+    f.close()
+
+    comp = c["completed"] or 1
+    ng = c["numeric_gold"] or 1
+    cost = None
+    if price_in or price_out:
+        cost = round((sum(in_tok) * price_in + sum(out_tok) * price_out) / 1e6, 4)
+    return {
+        "status": "completed", "llm_model": model, "llm_api_base": api_base,
+        "prompt_version": QA_PROMPT_VERSION, "sample_size": len(pool),
+        "qa_attempted": c["attempted"], "qa_completed": c["completed"], "qa_failed": c["failed"],
+        "empty_answers": c["empty"], "refusals": c["refusal"], "unparseable_numeric": c["unparseable"],
+        "numeric_gold_questions": c["numeric_gold"],
+        "numeric_exact_match": round(c["numeric_em"] / ng, 4),
+        "numeric_accuracy_0.5pct": round(c["numeric_acc"] / ng, 4),
+        "normalized_exact_match": round(c["norm_em"] / comp, 4),
+        "source_in_context_rate": round(c["source_hit"] / comp, 4),
+        "answer_and_source_joint_accuracy": round(c["joint"] / comp, 4),
+        "llm_tokens": {"input_total": sum(in_tok), "input_avg": round(statistics.mean(in_tok), 1) if in_tok else None,
+                       "output_total": sum(out_tok), "output_avg": round(statistics.mean(out_tok), 1) if out_tok else None},
+        "generation_latency_ms": {"avg": round(statistics.mean(gen_lat), 1) if gen_lat else None,
+                                  "p50": _pct(gen_lat, 50), "p95": _pct(gen_lat, 95), "p99": _pct(gen_lat, 99)},
+        "output_tokens_per_s": round(sum(out_tok) / (sum(gen_lat) / 1000), 1) if gen_lat and sum(gen_lat) > 0 else None,
+        "estimated_cost_usd": cost,
+    }
+
+
 # ── orchestration ────────────────────────────────────────────────────────────
-def run(mode="quick", top_k=10, max_qa=None, log=None):
+def run(mode="quick", top_k=10, max_qa=None, qa_sample=100, log=None):
     run_id = f"{int(time.time())}-{mode}-{uuid.uuid4().hex[:6]}"
     artifacts = BENCH_DIR / run_id
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -404,6 +578,14 @@ def run(mode="quick", top_k=10, max_qa=None, log=None):
         retrieval = agg_retrieval(results, lat, fails)
         _log(f"Hit@1={retrieval['hit@1']} Hit@5={retrieval['hit@5']} MRR@10={retrieval['mrr@10']}")
 
+        sampler.set_phase("generation")
+        if qa_sample:
+            _log(f"Answer-quality eval (LLM, sample={qa_sample})…")
+            answer_quality = qa_eval(qa, _log, artifacts, sample=qa_sample, top_k=min(top_k, 5))
+        else:
+            answer_quality = {"status": "disabled (qa_sample=0)"}
+        _log(f"answer-quality: {answer_quality.get('status')}")
+
         sampler.set_phase("done")
     finally:
         sampler.stop()
@@ -411,9 +593,10 @@ def run(mode="quick", top_k=10, max_qa=None, log=None):
     resources = agg_resources(artifacts / "resource-samples.jsonl")
     finished = time.time()
     cfg.update(status="completed", finished=finished, wall_time_s=round(finished - started, 1))
+    cfg["external_llm"] = answer_quality.get("llm_model") if answer_quality.get("status") == "completed" else None
     summary = {
         "run_config": cfg, "dataset_corpus": corpus, "ingestion": ingestion, "retrieval": retrieval,
-        "answer_quality": {"status": "not run (v1 retrieval-only)"},
+        "answer_quality": answer_quality,
         "resources": resources,
         "errors": {"query_failures": fails, "ingestion_failed": ingestion["documents_failed"],
                    "upload_failed": ingestion["upload_failed"], "qa_missing_pdf": corpus["qa_records_missing_pdf"]},
@@ -429,13 +612,15 @@ def main():
     ap = argparse.ArgumentParser(description="NeMo Retriever retrieval benchmark (v1)")
     ap.add_argument("mode", nargs="?", default="quick", choices=list(dd.MODES))
     ap.add_argument("--top-k", type=int, default=10)
-    ap.add_argument("--max-qa", type=int, default=None, help="cap eval queries (default: all evaluable)")
+    ap.add_argument("--max-qa", type=int, default=None, help="cap retrieval-eval queries (default: all)")
+    ap.add_argument("--qa-sample", type=int, default=100, help="answer-quality sample size (0 disables)")
+    ap.add_argument("--no-qa", action="store_true", help="skip answer-quality eval")
     args = ap.parse_args()
-    s = run(args.mode, args.top_k, args.max_qa)
+    s = run(args.mode, args.top_k, args.max_qa, qa_sample=0 if args.no_qa else args.qa_sample)
     print("\n=== retrieval ===")
     print(json.dumps(s["retrieval"], indent=2))
-    print("\n=== corpus ===")
-    print(json.dumps(s["dataset_corpus"], indent=2))
+    print("\n=== answer_quality ===")
+    print(json.dumps(s["answer_quality"], indent=2))
 
 
 if __name__ == "__main__":
