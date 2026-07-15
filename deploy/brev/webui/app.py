@@ -65,20 +65,40 @@ _PF_PORT = "7670"
 
 
 def _portforward_manager() -> None:
+    # Self-healing: the UI starts before k3s exists and k3s restarts a few times
+    # during bootstrap, so a plain "respawn if the process died" loop can get
+    # wedged. Instead, actively probe /v1/health and force-respawn whenever the
+    # forward isn't actually serving — even if the process looks alive.
     if not ("localhost" in RETRIEVER_URL or "127.0.0.1" in RETRIEVER_URL):
         return
-    env = dict(os.environ)
-    env.setdefault("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
-    kubectl = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+    kubeconfig = os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
     proc = None
+    bad = 0
     while True:
         try:
-            if proc is None or proc.poll() is not None:
+            kubectl = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+            ready = os.path.exists(kubectl) and os.path.exists(kubeconfig)
+            try:
+                serving = requests.get(f"{RETRIEVER_URL}/v1/health", timeout=2).status_code == 200
+            except Exception:  # noqa: BLE001
+                serving = False
+            bad = 0 if serving else bad + 1
+            # respawn if the process is gone, or health has failed a few times in a row
+            if ready and ((proc is None or proc.poll() is not None) or bad >= 3):
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:  # noqa: BLE001
+                        proc.kill()
+                env = dict(os.environ)
+                env["KUBECONFIG"] = kubeconfig
                 proc = subprocess.Popen(
                     [kubectl, "port-forward", "-n", "retriever",
                      "svc/retriever-nemo-retriever", f"{_PF_PORT}:{_PF_PORT}"],
                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
+                bad = 0
         except Exception:  # noqa: BLE001 - kubectl may not exist until k3s is installed
             proc = None
         time.sleep(5)
