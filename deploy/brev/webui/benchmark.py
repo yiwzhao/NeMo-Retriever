@@ -393,6 +393,10 @@ def qa_eval(qa, log, artifacts, sample=100, top_k=5):
     key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("LLM_API_KEY")
     if not key:
         return {"status": "skipped — set NVIDIA_API_KEY (build.nvidia.com) to enable answer-quality eval"}
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError:
+        return {"status": "skipped — NVIDIA_API_KEY has non-ASCII characters (did you paste a placeholder like 'nvapi-…'? use your real key)"}
     api_base = os.environ.get("LLM_API_BASE", "https://integrate.api.nvidia.com/v1")
     model = os.environ.get("LLM_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1.5")
     price_in = float(os.environ.get("LLM_PRICE_IN_PER_M", 0) or 0)
