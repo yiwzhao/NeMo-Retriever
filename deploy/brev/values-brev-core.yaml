@@ -46,13 +46,15 @@ service:
   # true only if you will ingest audio/video AND your image allows runtime
   # package install.
   installFfmpeg: false
+  # Requests are reservations, kept small so the whole stack fits on modest
+  # nodes (e.g. a 16-CPU box). The service still bursts up to its limit.
   resources:
     requests:
-      cpu: "8"
-      memory: 16Gi
+      cpu: "2"
+      memory: 8Gi
     limits:
-      cpu: "32"
-      memory: 64Gi
+      cpu: "12"
+      memory: 48Gi
 
 serviceConfig:
   server:
