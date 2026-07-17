@@ -31,7 +31,14 @@ fi
 # installed (e.g. requests, jupyter).
 VENV="${HOME}/deploy-ui-venv"
 echo "==> Installing Deploy UI dependencies into ${VENV}"
-python3 -m venv --system-site-packages "${VENV}"
+# Some minimal images ship Python without venv/pip (ensurepip missing).
+if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+  echo "    installing python3-venv / python3-pip (missing on this image)"
+  sudo apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip
+fi
+# (re)create the venv if it's missing or a previous run left it broken
+[ -x "${VENV}/bin/pip" ] || { rm -rf "${VENV}"; python3 -m venv --system-site-packages "${VENV}"; }
 "${VENV}/bin/pip" install --quiet --upgrade pip
 "${VENV}/bin/pip" install --quiet fastapi "uvicorn[standard]" requests huggingface_hub psutil
 
