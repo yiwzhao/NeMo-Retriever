@@ -121,14 +121,16 @@ def _detect_existing() -> None:
         time.sleep(6)
 
 
-threading.Thread(target=_portforward_manager, daemon=True).start()
-threading.Thread(target=_detect_existing, daemon=True).start()
-
 # ── deploy state (single run at a time) ──────────────────────────────────────
+# Defined BEFORE the background threads start — _detect_existing uses _lock/_state,
+# so starting the threads earlier races the module import (NameError on some hosts).
 _state = {"phase": "idle", "running": False, "done": False, "ok": False}
 _log: list[str] = []
 _lock = threading.Lock()
 _KEY_RE = re.compile(r"nvapi-[A-Za-z0-9_\-]+")
+
+threading.Thread(target=_portforward_manager, daemon=True).start()
+threading.Thread(target=_detect_existing, daemon=True).start()
 
 
 def _redact(line: str) -> str:
