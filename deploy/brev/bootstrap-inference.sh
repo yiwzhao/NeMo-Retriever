@@ -71,14 +71,15 @@ fi
 # ── 2. Pull the Dynamo image directly into k3s containerd ────────────────────
 # k3s bundles its own containerd; `k3s ctr` is the authoritative CLI for it.
 # Pulling here means the pods start immediately without waiting for an image pull.
-log "Pulling Dynamo image into k3s containerd (12 GB; may take 5-15 min first time)"
-if sudo k3s ctr images ls 2>/dev/null | grep -q "${DYNAMO_IMAGE}"; then
-  log "  Image already present in containerd cache — skipping pull."
+log "Pulling Dynamo image into k3s containerd k8s.io namespace (12 GB; may take 5-15 min first time)"
+# Pods run in the k8s.io containerd namespace; pull there so pods start instantly.
+if sudo k3s ctr --namespace k8s.io images ls 2>/dev/null | grep -q "${DYNAMO_IMAGE}"; then
+  log "  Image already present in k8s.io namespace — skipping pull."
 else
-  sudo k3s ctr images pull \
+  sudo k3s ctr --namespace k8s.io images pull \
     --user "\$oauthtoken:${NGC_API_KEY}" \
     "${DYNAMO_IMAGE}" \
-    || warn "Image pull failed — pods will attempt it themselves on startup."
+    || warn "Image pull failed — pods will pull it themselves on startup (slower first start)."
 fi
 
 # ── 3. Secrets ────────────────────────────────────────────────────────────────
