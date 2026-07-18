@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lmcache-config
+  namespace: retriever
+data:
+  lmcache.yaml: |
+    # LMCache engine config for CacheBlend path.
+    # chunk_size: token chunk size for KV cache segmentation.
+    # CacheBlend reuses cached KV chunks even when they appear at non-prefix positions
+    # (e.g. retrieved docs assembled in different orderings across requests).
+    chunk_size: 256
+
+    # Local CPU offload — stores KV chunks in host RAM between requests.
+    # Adjust max_local_cpu_size_gb based on available host RAM.
+    local_cpu:
+      enabled: true
+      max_size_gb: 40
+
+    # Enable CacheBlend: blends cached KV chunks into the attention computation
+    # rather than requiring exact prefix matches (as APC does).
+    enable_blending: true
+
+    # Fraction of each chunk that must be cached before blending kicks in.
+    # 0.5 = blend if at least half the chunk's KV is cached.
+    blending_fill_ratio: 0.5
+
+    # Remote storage: disabled for single-node MVP. Enable for multi-node setups
+    # to share KV cache across replicas (requires Redis or similar).
+    remote_url: "disabled"

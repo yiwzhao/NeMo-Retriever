@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NeMo Retriever + CacheBlend — Side-by-Side</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #1c2128;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --green: #3fb950;
+  --green-dim: #1a4a24;
+  --blue: #58a6ff;
+  --orange: #f0883e;
+  --red: #f85149;
+  --nvidia: #76b900;
+  --baseline-accent: #58a6ff;
+  --cb-accent: #76b900;
+}
+
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ── header ── */
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--surface);
+}
+header h1 { font-size: 17px; font-weight: 600; color: var(--text); }
+header h1 span { color: var(--nvidia); }
+.health-row { display: flex; gap: 8px; font-size: 12px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+.dot.ok { background: var(--green); }
+.dot.err { background: var(--red); }
+.health-label { display: flex; align-items: center; gap: 5px; color: var(--text-dim); }
+
+/* ── query bar ── */
+.query-bar {
+  padding: 16px 24px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  display: flex; gap: 10px; align-items: flex-start;
+}
+.query-bar textarea {
+  flex: 1; padding: 10px 14px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 14px; font-family: inherit;
+  resize: none; min-height: 52px; max-height: 160px; line-height: 1.5;
+}
+.query-bar textarea:focus { outline: none; border-color: var(--blue); }
+.query-bar .controls { display: flex; flex-direction: column; gap: 8px; }
+.btn {
+  padding: 9px 18px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 500; white-space: nowrap;
+}
+.btn-primary { background: var(--nvidia); color: #000; }
+.btn-primary:hover { background: #8dd400; }
+.btn-primary:disabled { background: #3a4a1a; color: #666; cursor: not-allowed; }
+.btn-secondary {
+  background: transparent; color: var(--text-dim);
+  border: 1px solid var(--border); font-size: 12px; padding: 6px 12px;
+}
+.btn-secondary:hover { border-color: var(--text-dim); color: var(--text); }
+.cache-toggle {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim);
+}
+.cache-toggle input { accent-color: var(--nvidia); }
+
+/* ── panels ── */
+.panels {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 0; height: calc(100vh - 130px); overflow: hidden;
+}
+.panel { display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow: hidden; }
+.panel:last-child { border-right: none; }
+
+.panel-header {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface2); flex-shrink: 0;
+}
+.panel-title {
+  font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+}
+.panel-title .badge {
+  padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+}
+.baseline .panel-title .badge { background: #1a2a4a; color: var(--baseline-accent); }
+.cacheblend .panel-title .badge { background: var(--green-dim); color: var(--nvidia); }
+.panel-subtitle { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+/* ── metrics bar ── */
+.metrics-bar {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.metric {
+  flex: 1; padding: 8px 10px; text-align: center;
+  border-right: 1px solid var(--border); transition: background 0.3s;
+}
+.metric:last-child { border-right: none; }
+.metric-val {
+  font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--text-dim); line-height: 1;
+}
+.metric-val.live { color: var(--text); }
+.metric-val.better { color: var(--green); }
+.metric-val.worse { color: var(--orange); }
+.metric-label { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+
+/* ── context ── */
+.context-section {
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0; max-height: 140px; overflow-y: auto;
+}
+.context-section summary {
+  cursor: pointer; font-size: 11px; color: var(--text-dim);
+  list-style: none; display: flex; align-items: center; gap: 6px;
+}
+.context-section summary::-webkit-details-marker { display: none; }
+.context-section summary::before { content: "▶"; font-size: 9px; transition: transform 0.15s; }
+details[open] summary::before { transform: rotate(90deg); }
+.hit {
+  margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-dim); line-height: 1.4;
+}
+.hit-source { font-size: 10px; color: var(--blue); margin-bottom: 3px; }
+.hit-text { display: -webkit-box; -webkit-box-orient: vertical;
+             -webkit-line-clamp: 2; overflow: hidden; }
+
+/* ── response ── */
+.response-area {
+  flex: 1; overflow-y: auto; padding: 14px 16px;
+  font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-wrap: break-word;
+}
+.response-area .placeholder { color: var(--text-dim); font-style: italic; }
+.cursor { display: inline-block; width: 2px; height: 1em; background: var(--text);
+          vertical-align: text-bottom; animation: blink 0.8s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── benchmark tab ── */
+.tab-bar {
+  display: flex; gap: 0; padding: 0 24px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.tab { padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent;
+       color: var(--text-dim); }
+.tab.active { color: var(--text); border-bottom-color: var(--nvidia); }
+
+/* ── bench view ── */
+#bench-view { display: none; padding: 24px; overflow-y: auto; }
+#bench-view.visible { display: block; }
+.bench-controls { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label { font-size: 12px; color: var(--text-dim); }
+.form-group input, .form-group select {
+  padding: 6px 10px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 13px; width: 160px;
+}
+.bench-log {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px;
+  color: var(--text-dim); height: 200px; overflow-y: auto; margin-top: 16px;
+}
+.results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 16px; margin-top: 20px; }
+.result-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+}
+.result-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+.stat-row { display: flex; justify-content: space-between; align-items: center;
+            padding: 5px 0; border-bottom: 1px solid var(--border); }
+.stat-row:last-child { border-bottom: none; }
+.stat-name { font-size: 12px; color: var(--text-dim); }
+.stat-val { font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-val.better { color: var(--green); }
+.delta-card { background: var(--green-dim); border-color: var(--green); }
+.delta-card h3 { color: var(--green); }
+
+/* ── spinner ── */
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border);
+           border-top-color: var(--nvidia); border-radius: 50%;
+           animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NeMo Retriever + <span>CacheBlend</span> — Side-by-Side Comparison</h1>
+  <div class="health-row" id="health-row">
+    <span class="health-label"><span class="dot" id="dot-retriever"></span>Retriever</span>
+    <span class="health-label"><span class="dot" id="dot-baseline"></span>Baseline (APC)</span>
+    <span class="health-label"><span class="dot" id="dot-cacheblend"></span>CacheBlend</span>
+  </div>
+</header>
+
+<div class="tab-bar">
+  <div class="tab active" onclick="showTab('compare')">Compare</div>
+  <div class="tab" onclick="showTab('bench')">Benchmark</div>
+</div>
+
+<!-- ── Compare view ── -->
+<div id="compare-view">
+  <div class="query-bar">
+    <textarea id="query-input" placeholder="Ask a question about your ingested documents…" rows="2"
+              onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){ask();}"></textarea>
+    <div class="controls">
+      <button class="btn btn-primary" id="ask-btn" onclick="ask()">Ask (Ctrl+Enter)</button>
+      <label class="cache-toggle">
+        <input type="checkbox" id="warm-toggle"> Warm cache (re-use prior context)
+      </label>
+      <button class="btn btn-secondary" onclick="reset()">Clear</button>
+    </div>
+  </div>
+
+  <div class="panels">
+    <!-- Baseline panel -->
+    <div class="panel baseline" id="panel-baseline">
+      <div class="panel-header">
+        <div class="panel-title">
+          Baseline Path
+          <span class="badge">vLLM + APC</span>
+        </div>
+        <div class="panel-subtitle">Automatic Prefix Caching — reuses contiguous prefix KV states</div>
+      </div>
+      <div class="metrics-bar">
+        <div class="metric"><div class="metric-val" id="b-ttft">—</div><div class="metric-label">TTFT (ms)</div></div>
+        <div class="metric"><div class="metric-val" id="b-e2e">—</div><div class="metric-label">E2E (ms)</div></div>
+        <div class="metric"><div class="metric-val" id="b-tput">—</div><div class="metric-label">tok/s</div></div>
+        <div class="metric"><div class="metric-val" id="b-prefix">—</div><div class="metric-label">APC hit %</div></div>
+      </div>
+      <details class="context-section" id="b-context-section">
+        <summary id="b-context-label">Retrieved context</summary>
+        <div id="b-hits"></div>
+      </details>
+      <div class="response-area" id="b-response">
+        <span class="placeholder">Response will appear here…</span>
+      </div>
+    </div>
+
+    <!-- CacheBlend panel -->
+    <div class="panel cacheblend" id="panel-cacheblend">
+      <div class="panel-header">
+        <div class="panel-title">
+          Optimized Path
+          <span class="badge">vLLM + APC + LMCache</span>
+        </div>
+        <div class="panel-subtitle">CacheBlend — adds non-prefix KV reuse for retrieved chunks</div>
+      </div>
+      <div class="metrics-bar">
+        <div class="metric"><div class="metric-val" id="c-ttft">—</div><div class="metric-label">TTFT (ms)</div></div>
+        <div class="metric"><div class="metric-val" id="c-e2e">—</div><div class="metric-label">E2E (ms)</div></div>
+        <div class="metric"><div class="metric-val" id="c-tput">—</div><div class="metric-label">tok/s</div></div>
+        <div class="metric"><div class="metric-val" id="c-prefix">—</div><div class="metric-label">APC hit %</div></div>
+        <div class="metric"><div class="metric-val" id="c-blend">—</div><div class="metric-label">Blend ratio</div></div>
+      </div>
+      <details class="context-section" id="c-context-section">
+        <summary id="c-context-label">Retrieved context (shared)</summary>
+        <div id="c-hits"></div>
+      </details>
+      <div class="response-area" id="c-response">
+        <span class="placeholder">Response will appear here…</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Benchmark view ── -->
+<div id="bench-view">
+  <div class="bench-controls">
+    <div class="form-group">
+      <label>Questions (one per line)</label>
+      <textarea id="bench-questions" style="width:400px;height:120px;padding:8px;border-radius:5px;
+        border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;resize:vertical;"
+        placeholder="Paste benchmark questions here…"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Top-K context chunks</label>
+      <input type="number" id="bench-topk" value="5" min="1" max="20">
+    </div>
+    <div class="form-group">
+      <label>Warm-up queries</label>
+      <input type="number" id="bench-warmup" value="3" min="0" max="20">
+    </div>
+    <button class="btn btn-primary" id="bench-run-btn" onclick="runBench()">Run Benchmark</button>
+  </div>
+  <div class="bench-log" id="bench-log">Benchmark output will appear here…</div>
+  <div class="results-grid" id="bench-results"></div>
+</div>
+
+<script>
+// ── state ────────────────────────────────────────────────────────────────────
+let running = false;
+let sharedHits = null;  // cache shared retrieval result across warm runs
+const lastMetrics = { baseline: {}, cacheblend: {} };
+
+// ── health check ─────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health').then(r => r.json());
+    document.getElementById('dot-retriever').className = 'dot ' + (r.ok ? 'ok' : 'err');
+  } catch { document.getElementById('dot-retriever').className = 'dot err'; }
+
+  for (const path of ['baseline', 'cacheblend']) {
+    try {
+      const r = await fetch(`/api/inference/health/${path}`).then(r => r.json());
+      document.getElementById(`dot-${path}`).className = 'dot ' + (r.ok ? 'ok' : 'err');
+    } catch { document.getElementById(`dot-${path}`).className = 'dot err'; }
+  }
+}
+checkHealth();
+setInterval(checkHealth, 15000);
+
+// ── tab switching ─────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.getElementById('compare-view').style.display = name === 'compare' ? '' : 'none';
+  const bv = document.getElementById('bench-view');
+  bv.style.display = name === 'bench' ? 'block' : 'none';
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.className = 'tab' + (['compare','bench'][i] === name ? ' active' : '');
+  });
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function setMetric(id, val, unit='', basePath=null, compPath=null) {
+  const el = document.getElementById(id);
+  if (val == null) { el.textContent = '—'; el.className = 'metric-val'; return; }
+  const formatted = typeof val === 'number' ? val.toLocaleString(undefined, {maximumFractionDigits: 1}) + unit : val;
+  el.textContent = formatted;
+  el.className = 'metric-val live';
+  // Color the cacheblend metric if we have both values to compare
+  if (basePath != null && compPath != null) {
+    const bv = lastMetrics.baseline[basePath];
+    const cv = lastMetrics.cacheblend[compPath];
+    if (bv != null && cv != null) {
+      const lower = ['ttft_ms', 'e2e_ms'].includes(basePath);
+      const better = lower ? cv < bv : cv > bv;
+      if (id.startsWith('c-')) {
+        el.className = 'metric-val live ' + (better ? 'better' : 'worse');
+      }
+    }
+  }
+}
+
+function renderHits(containerId, hits) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = '';
+  if (!hits || !hits.length) { el.innerHTML = '<div class="hit" style="color:var(--text-dim)">No context retrieved.</div>'; return; }
+  hits.forEach((h, i) => {
+    const d = document.createElement('div');
+    d.className = 'hit';
+    d.innerHTML = `<div class="hit-source">${h.source || `chunk ${i+1}`} · score ${h.score != null ? h.score.toFixed(4) : '—'}</div>
+                   <div class="hit-text">${(h.text||'').slice(0,200)}</div>`;
+    el.appendChild(d);
+  });
+}
+
+function setSpinner(panelId, on) {
+  const h = document.getElementById(panelId + '-context-section');
+  if (!h) return;
+  const label = h.querySelector('summary');
+  if (on) label.innerHTML = '<span class="spinner"></span> Retrieving context…';
+}
+
+// ── main ask ─────────────────────────────────────────────────────────────────
+function reset() {
+  ['b-response','c-response'].forEach(id => {
+    document.getElementById(id).innerHTML = '<span class="placeholder">Response will appear here…</span>';
+  });
+  ['b-ttft','b-e2e','b-tput','b-prefix','c-ttft','c-e2e','c-tput','c-prefix','c-blend']
+    .forEach(id => setMetric(id, null));
+  ['b-hits','c-hits'].forEach(id => document.getElementById(id).innerHTML = '');
+  sharedHits = null;
+  running = false;
+  document.getElementById('ask-btn').disabled = false;
+  document.getElementById('ask-btn').textContent = 'Ask (Ctrl+Enter)';
+}
+
+async function ask() {
+  if (running) return;
+  const q = document.getElementById('query-input').value.trim();
+  if (!q) return;
+
+  running = true;
+  document.getElementById('ask-btn').disabled = true;
+  document.getElementById('ask-btn').innerHTML = '<span class="spinner"></span>';
+
+  // Clear previous results
+  ['b-response','c-response'].forEach(id => {
+    document.getElementById(id).innerHTML = '';
+  });
+  ['b-ttft','b-e2e','b-tput','b-prefix','c-ttft','c-e2e','c-tput','c-prefix','c-blend']
+    .forEach(id => { document.getElementById(id).textContent = '—';
+                     document.getElementById(id).className = 'metric-val'; });
+
+  const useWarm = document.getElementById('warm-toggle').checked;
+
+  // Fire both streams in parallel
+  await Promise.all([
+    streamPath('baseline',   q, useWarm),
+    streamPath('cacheblend', q, useWarm),
+  ]);
+
+  // Update relative coloring after both finish
+  colorCompare('b-ttft', 'c-ttft', 'ttft_ms', true);
+  colorCompare('b-e2e',  'c-e2e',  'e2e_ms',  true);
+  colorCompare('b-tput', 'c-tput', 'throughput_tok_s', false);
+
+  running = false;
+  document.getElementById('ask-btn').disabled = false;
+  document.getElementById('ask-btn').textContent = 'Ask (Ctrl+Enter)';
+}
+
+function colorCompare(bId, cId, key, lowerIsBetter) {
+  const bEl = document.getElementById(bId);
+  const cEl = document.getElementById(cId);
+  const bv = lastMetrics.baseline[key];
+  const cv = lastMetrics.cacheblend[key];
+  if (bv == null || cv == null) return;
+  const cbBetter = lowerIsBetter ? cv < bv : cv > bv;
+  cEl.className = 'metric-val live ' + (cbBetter ? 'better' : 'worse');
+  bEl.className = 'metric-val live ' + (cbBetter ? '' : 'better');
+}
+
+async function streamPath(path, question, reuseHits) {
+  const prefix = path === 'baseline' ? 'b' : 'c';
+  const responseEl = document.getElementById(`${prefix}-response`);
+  const hitsEl = document.getElementById(`${prefix}-hits`);
+
+  // Show context spinner
+  const ctxSection = document.getElementById(`${prefix}-context-section`);
+  ctxSection.querySelector('summary').innerHTML =
+    '<span class="spinner"></span> Retrieving…';
+
+  try {
+    const body = { question, path };
+    // On warm runs, pass the shared hits from the first path that already retrieved
+    if (reuseHits && sharedHits) body.shared_hits = sharedHits;
+
+    const resp = await fetch('/api/rag/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let cursor = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        if (!part.startsWith('data: ')) continue;
+        let evt;
+        try { evt = JSON.parse(part.slice(6)); } catch { continue; }
+
+        if (evt.type === 'context') {
+          // Capture shared hits for warm re-runs (first response wins)
+          if (!sharedHits) sharedHits = evt.hits;
+          renderHits(`${prefix}-hits`, evt.hits);
+          const n = (evt.hits || []).length;
+          ctxSection.querySelector('summary').textContent =
+            `${n} context chunk${n !== 1 ? 's' : ''} retrieved (${evt.retrieval_ms}ms)`;
+          ctxSection.open = false;
+
+        } else if (evt.type === 'token') {
+          if (cursor) cursor.remove();
+          responseEl.appendChild(document.createTextNode(evt.text));
+          cursor = document.createElement('span');
+          cursor.className = 'cursor';
+          responseEl.appendChild(cursor);
+          responseEl.scrollTop = responseEl.scrollHeight;
+
+        } else if (evt.type === 'metrics') {
+          if (cursor) cursor.remove();
+          lastMetrics[path] = evt;
+
+          const fmt = v => v != null ? Math.round(v) : '—';
+          const fmtF = (v, d=1) => v != null ? v.toFixed(d) : '—';
+
+          setMetric(`${prefix}-ttft`, fmt(evt.ttft_ms), 'ms');
+          setMetric(`${prefix}-e2e`,  fmt(evt.e2e_ms),  'ms');
+          setMetric(`${prefix}-tput`, fmtF(evt.throughput_tok_s), ' t/s');
+          const hitPct = evt.prefix_cache_hit_rate != null
+            ? (evt.prefix_cache_hit_rate * 100).toFixed(1) + '%' : '—';
+          document.getElementById(`${prefix}-prefix`).textContent = hitPct;
+          document.getElementById(`${prefix}-prefix`).className = 'metric-val live';
+
+          if (path === 'cacheblend') {
+            const blendPct = evt.lmcache_blend_ratio != null
+              ? (evt.lmcache_blend_ratio * 100).toFixed(1) + '%' : '—';
+            document.getElementById('c-blend').textContent = blendPct;
+            document.getElementById('c-blend').className = 'metric-val live';
+          }
+
+        } else if (evt.type === 'error') {
+          responseEl.innerHTML += `<span style="color:var(--red)">Error: ${evt.text}</span>`;
+          ctxSection.querySelector('summary').textContent = 'Error';
+        }
+      }
+    }
+  } catch (e) {
+    responseEl.innerHTML += `<span style="color:var(--red)">Stream error: ${e.message}</span>`;
+  }
+}
+
+// ── benchmark ─────────────────────────────────────────────────────────────────
+async function runBench() {
+  const rawQ = document.getElementById('bench-questions').value.trim();
+  if (!rawQ) { alert('Enter at least one question.'); return; }
+  const questions = rawQ.split('\n').map(s => s.trim()).filter(Boolean);
+  const topK = parseInt(document.getElementById('bench-topk').value) || 5;
+  const warmup = parseInt(document.getElementById('bench-warmup').value) || 0;
+
+  document.getElementById('bench-run-btn').disabled = true;
+  document.getElementById('bench-run-btn').innerHTML = '<span class="spinner"></span> Running…';
+  const logEl = document.getElementById('bench-log');
+  logEl.textContent = '';
+  document.getElementById('bench-results').innerHTML = '';
+
+  const resp = await fetch('/api/inference/benchmark/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questions, top_k: topK, cold_cache_warmup: warmup }),
+  });
+  const { started } = await resp.json();
+  if (!started) { logEl.textContent = 'Failed to start benchmark.'; return; }
+
+  // Stream logs
+  const evtSrc = new EventSource('/api/inference/benchmark/logs');
+  evtSrc.onmessage = e => {
+    const { line } = JSON.parse(e.data);
+    logEl.textContent += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  evtSrc.addEventListener('end', async e => {
+    evtSrc.close();
+    document.getElementById('bench-run-btn').disabled = false;
+    document.getElementById('bench-run-btn').textContent = 'Run Benchmark';
+
+    // Load summary
+    try {
+      const summary = await fetch('/api/inference/benchmark/summary').then(r => r.json());
+      renderBenchResults(summary);
+    } catch (ex) { logEl.textContent += '\nFailed to load summary: ' + ex; }
+  });
+  evtSrc.onerror = () => {
+    evtSrc.close();
+    document.getElementById('bench-run-btn').disabled = false;
+    document.getElementById('bench-run-btn').textContent = 'Run Benchmark';
+  };
+}
+
+function renderBenchResults(s) {
+  const el = document.getElementById('bench-results');
+  el.innerHTML = '';
+
+  function card(title, data, cls='') {
+    const rows = Object.entries(data).map(([k, v]) => {
+      if (v == null || typeof v === 'object') return '';
+      const nice = typeof v === 'number' ? v.toLocaleString(undefined, {maximumFractionDigits: 2}) : v;
+      return `<div class="stat-row"><span class="stat-name">${k}</span><span class="stat-val">${nice}</span></div>`;
+    }).filter(Boolean).join('');
+    const d = document.createElement('div');
+    d.className = `result-card ${cls}`;
+    d.innerHTML = `<h3>${title}</h3>${rows}`;
+    el.appendChild(d);
+  }
+
+  function latCard(title, agg, cls='') {
+    const lms = agg?.ttft_ms || {};
+    const e2e = agg?.e2e_ms  || {};
+    const tput = agg?.throughput_tok_s || {};
+    card(title, {
+      'TTFT avg (ms)':  lms.avg, 'TTFT p50 (ms)': lms.p50, 'TTFT p95 (ms)': lms.p95,
+      'E2E avg (ms)':   e2e.avg, 'E2E p50 (ms)':  e2e.p50, 'E2E p95 (ms)':  e2e.p95,
+      'Throughput avg (tok/s)': tput.avg,
+      'APC hit rate': agg?.prefix_cache_hit_rate?.avg != null
+        ? (agg.prefix_cache_hit_rate.avg * 100).toFixed(1) + '%' : null,
+      'Blend ratio': agg?.lmcache_blend_ratio?.avg != null
+        ? (agg.lmcache_blend_ratio.avg * 100).toFixed(1) + '%' : null,
+    }, cls);
+  }
+
+  latCard('Baseline (vLLM + APC)', s.baseline);
+  latCard('Optimized (CacheBlend)', s.cacheblend);
+
+  // Delta card
+  const delta = s.delta || {};
+  const ttftD = delta.ttft_ms || {};
+  const e2eD = delta.e2e_ms || {};
+  const tputD = delta.throughput_tok_s || {};
+  const d = document.createElement('div');
+  d.className = 'result-card delta-card';
+  d.innerHTML = `<h3>CacheBlend Delta</h3>
+    ${ttftD.pct != null ? `<div class="stat-row"><span class="stat-name">TTFT</span>
+      <span class="stat-val ${ttftD.cacheblend_better?'better':''}">${ttftD.pct > 0 ? '+' : ''}${ttftD.pct}%</span></div>` : ''}
+    ${e2eD.pct != null ? `<div class="stat-row"><span class="stat-name">E2E Latency</span>
+      <span class="stat-val ${e2eD.cacheblend_better?'better':''}">${e2eD.pct > 0 ? '+' : ''}${e2eD.pct}%</span></div>` : ''}
+    ${tputD.pct != null ? `<div class="stat-row"><span class="stat-name">Throughput</span>
+      <span class="stat-val ${tputD.cacheblend_better?'better':''}">${tputD.pct > 0 ? '+' : ''}${tputD.pct}%</span></div>` : ''}
+    <div class="stat-row"><span class="stat-name">Queries</span>
+      <span class="stat-val">${s.questions}</span></div>`;
+  el.appendChild(d);
+}
+</script>
+</body>
+</html>

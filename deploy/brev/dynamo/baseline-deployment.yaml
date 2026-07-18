@@ -1,0 +1,136 @@
+---
+# Baseline inference path: vLLM with Automatic Prefix Caching (APC) only.
+# Exposes an OpenAI-compatible API on svc/inference-baseline:8001.
+#
+# This is the "strongest realistic alternative" baseline — APC handles
+# contiguous prefix reuse (stable system prompt + first N retrieved chunks),
+# but cannot reuse KV from chunks that appear in different positions across
+# requests (the gap CacheBlend fills).
+#
+# GPU requirement: 1 physical GPU with enough VRAM for the chosen model.
+#   Llama-3.1-8B-Instruct ≈ 16 GB (bf16) — fits alongside the core NIMs
+#   on a single 96 GB GPU with time-slicing enabled.
+#
+# Model: set LLM_MODEL env var on the pod, or override here.
+#   Default: meta-llama/Llama-3.1-8B-Instruct (requires HF_TOKEN or NGC auth).
+#   70B variant: set --max-model-len lower and ensure ≥80 GB VRAM.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-baseline
+  namespace: retriever
+  labels:
+    app: inference-baseline
+    inference-path: baseline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inference-baseline
+  template:
+    metadata:
+      labels:
+        app: inference-baseline
+        inference-path: baseline
+    spec:
+      # Pull the same NGC credentials used by the rest of the stack.
+      imagePullSecrets:
+        - name: retriever-ngc-image-pull-secret
+      containers:
+        - name: vllm
+          # Dynamo vLLM Runtime — nvcr.io/nvidia/ai-dynamo/vllm:<tag>
+          # Latest: 1.2.1 (June 2026). Check NGC Tags tab for newer versions:
+          # https://catalog.ngc.nvidia.com/orgs/nvidia/ai-dynamo/containers/vllm
+          image: nvcr.io/nvidia/ai-dynamo/vllm:1.2.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - vllm.entrypoints.openai.api_server
+          args:
+            - --model=$(LLM_MODEL)
+            - --host=0.0.0.0
+            - --port=8000
+            - --enable-prefix-caching        # APC: reuse contiguous prefix KV states
+            - --max-model-len=8192           # cap context to limit VRAM; raise for 70B
+            - --gpu-memory-utilization=0.45  # leave headroom for the other path on same GPU
+            - --served-model-name=baseline
+            - --disable-log-requests
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: llm_model
+                  optional: true
+            # Fallback if the secret is not set
+            - name: LLM_MODEL
+              value: "meta-llama/Llama-3.1-8B-Instruct"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: hf_token
+                  optional: true
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: hf_token
+                  optional: true
+            # NGC auth for gated models via NGC model registry
+            - name: NGC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: retriever-ngc-api-secret
+                  key: NGC_API_KEY
+                  optional: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 10
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: model-cache
+          emptyDir: {}  # weights re-downloaded on pod restart; use PVC for persistence
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-baseline
+  namespace: retriever
+  labels:
+    app: inference-baseline
+    inference-path: baseline
+spec:
+  selector:
+    app: inference-baseline
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8000
+  type: ClusterIP

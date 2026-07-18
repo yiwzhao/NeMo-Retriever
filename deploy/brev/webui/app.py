@@ -39,6 +39,8 @@ DATA_DIR = REPO_ROOT / "data"
 INDEX_HTML = HERE / "index.html"
 
 RETRIEVER_URL = os.environ.get("RETRIEVER_URL", "http://localhost:7670")
+# Inference layer — set by bootstrap-inference.sh when the LLM pods are up.
+os.environ.setdefault("RETRIEVER_URL", RETRIEVER_URL)  # propagate to inference module
 # Optional: a Jupyter URL for the "Open notebook" button. If unset, the UI shows
 # the notebook path instead.
 NOTEBOOK_URL = os.environ.get("NOTEBOOK_URL", "")
@@ -62,6 +64,12 @@ app = FastAPI(title="NeMo Retriever Deploy")
 # port-forward`. Run a self-healing forward so the playground (and any local
 # client) can hit http://localhost:7670 without a manual step.
 _PF_PORT = "7670"
+# Inference ports — forwarded by bootstrap-inference.sh; the manager
+# keeps them alive across k3s restarts just like the retriever forward.
+_INFERENCE_FORWARDS = [
+    ("svc/inference-baseline",   "8001", "8001"),
+    ("svc/inference-cacheblend", "8002", "8002"),
+]
 
 
 def _portforward_manager() -> None:
@@ -129,7 +137,33 @@ _log: list[str] = []
 _lock = threading.Lock()
 _KEY_RE = re.compile(r"nvapi-[A-Za-z0-9_\-]+")
 
+def _inference_portforward_manager() -> None:
+    """Keep port-forwards alive for both inference paths (best-effort, non-blocking)."""
+    kubeconfig = os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
+    procs: dict[str, object] = {}
+    while True:
+        try:
+            kubectl = shutil.which("kubectl") or "/usr/local/bin/kubectl"
+            ready = os.path.exists(kubectl) and os.path.exists(kubeconfig)
+            if ready:
+                for svc, local_port, remote_port in _INFERENCE_FORWARDS:
+                    proc = procs.get(svc)
+                    if proc is None or proc.poll() is not None:
+                        env = dict(os.environ)
+                        env["KUBECONFIG"] = kubeconfig
+                        procs[svc] = subprocess.Popen(
+                            [kubectl, "port-forward", "-n", "retriever",
+                             svc, f"{local_port}:{remote_port}"],
+                            env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(10)
+
+
 threading.Thread(target=_portforward_manager, daemon=True).start()
+threading.Thread(target=_inference_portforward_manager, daemon=True).start()
 threading.Thread(target=_detect_existing, daemon=True).start()
 
 
@@ -495,6 +529,7 @@ def dataset_logs() -> StreamingResponse:
 
 # ── benchmark harness (retrieval-only v1) ────────────────────────────────────
 import benchmark as bench  # noqa: E402  (deploy/brev/webui/benchmark.py)
+import inference as inf  # noqa: E402  (deploy/brev/webui/inference.py)
 
 _bench = {"phase": "idle", "run_id": None}
 _bench_log: list[str] = []
@@ -586,6 +621,145 @@ def benchmark_summary(run_id: str = "") -> JSONResponse:
             return JSONResponse({"error": "no completed runs"}, status_code=404)
         d = max(cand, key=lambda p: p.stat().st_mtime)
     return JSONResponse(json.loads((d / "summary.json").read_text(encoding="utf-8")))
+
+
+# ── inference comparison UI ───────────────────────────────────────────────────
+
+@app.get("/compare", response_class=HTMLResponse)
+def compare_page() -> str:
+    return (HERE / "compare.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/inference/health/{path}")
+def inference_health(path: str) -> JSONResponse:
+    """Health check for one inference path (baseline or cacheblend)."""
+    return JSONResponse(inf.check_health(path))
+
+
+@app.get("/api/inference/health")
+def inference_health_all() -> JSONResponse:
+    return JSONResponse({
+        "baseline": inf.check_health("baseline"),
+        "cacheblend": inf.check_health("cacheblend"),
+    })
+
+
+@app.post("/api/rag/stream")
+async def rag_stream(request: Request) -> StreamingResponse:
+    """
+    Streaming RAG endpoint.  Accepts JSON body:
+      { "question": str, "path": "baseline"|"cacheblend",
+        "shared_hits": [...] (optional, avoids re-retrieval for warm runs) }
+
+    Yields SSE events: context → token* → metrics | error
+    """
+    body = await request.json()
+    question = (body or {}).get("question", "").strip()
+    path = (body or {}).get("path", "baseline")
+    shared_hits = (body or {}).get("shared_hits")  # pre-fetched context from prior call
+    top_k = int((body or {}).get("top_k", inf.LLM_TOP_K))
+
+    if not question:
+        return JSONResponse({"error": "question is required"}, status_code=400)
+    if path not in inf.PATHS:
+        return JSONResponse({"error": f"unknown path: {path}"}, status_code=400)
+
+    llm_url = inf.PATHS[path]
+    return StreamingResponse(
+        inf.rag_stream_sse(question, llm_url, top_k=top_k,
+                           pre_fetched_hits=shared_hits or None),
+        media_type="text/event-stream",
+    )
+
+
+# ── inference benchmark ───────────────────────────────────────────────────────
+
+_ibench: dict = {"phase": "idle"}
+_ibench_log: list[str] = []
+_ibench_lock = threading.Lock()
+
+
+def _ibench_logfn(msg: str) -> None:
+    with _ibench_lock:
+        _ibench_log.append(str(msg))
+        if len(_ibench_log) > 4000:
+            del _ibench_log[: len(_ibench_log) - 4000]
+
+
+def _run_ibench(questions: list[str], top_k: int, cold_cache_warmup: int) -> None:
+    with _ibench_lock:
+        _ibench_log.clear()
+        _ibench.update(phase="running", run_id=None)
+    try:
+        summary = inf.run_inference_benchmark(
+            questions, top_k=top_k, cold_cache_warmup=cold_cache_warmup,
+            log=_ibench_logfn,
+        )
+        with _ibench_lock:
+            _ibench.update(phase="done", run_id=summary["run_id"])
+    except Exception as exc:  # noqa: BLE001
+        _ibench_logfn(f"ERROR: {exc}")
+        with _ibench_lock:
+            _ibench.update(phase="failed")
+
+
+@app.post("/api/inference/benchmark/start")
+async def ibench_start(request: Request) -> JSONResponse:
+    body = await request.json()
+    questions = (body or {}).get("questions", [])
+    if not questions:
+        return JSONResponse({"error": "questions list is required"}, status_code=400)
+    top_k = int((body or {}).get("top_k", inf.LLM_TOP_K))
+    warmup = int((body or {}).get("cold_cache_warmup", 0))
+    with _ibench_lock:
+        if _ibench["phase"] == "running":
+            return JSONResponse({"error": "A benchmark is already running."}, status_code=409)
+    threading.Thread(
+        target=_run_ibench, args=(questions, top_k, warmup), daemon=True
+    ).start()
+    return JSONResponse({"started": True})
+
+
+@app.get("/api/inference/benchmark/status")
+def ibench_status() -> dict:
+    with _ibench_lock:
+        return dict(_ibench)
+
+
+@app.get("/api/inference/benchmark/logs")
+def ibench_logs() -> StreamingResponse:
+    def gen():
+        idx = 0
+        while True:
+            with _ibench_lock:
+                new = _ibench_log[idx:]
+                idx = len(_ibench_log)
+                phase = _ibench["phase"]
+            for ln in new:
+                yield f"data: {json.dumps({'line': ln})}\n\n"
+            if phase in ("done", "failed") and idx >= len(_ibench_log):
+                yield f"event: end\ndata: {json.dumps({'phase': phase})}\n\n"
+                return
+            time.sleep(0.5)
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/inference/benchmark/summary")
+def ibench_summary(run_id: str = "") -> JSONResponse:
+    bench_dir = inf.BENCH_DIR
+    if not bench_dir.is_dir():
+        return JSONResponse({"error": "no benchmark runs found"}, status_code=404)
+    cands = [p for p in bench_dir.iterdir() if (p / "inference-summary.json").is_file()]
+    if not cands:
+        return JSONResponse({"error": "no completed inference runs"}, status_code=404)
+    if run_id:
+        d = bench_dir / run_id
+    else:
+        d = max(cands, key=lambda p: p.stat().st_mtime)
+    sf = d / "inference-summary.json"
+    if not sf.is_file():
+        return JSONResponse({"error": "summary not found"}, status_code=404)
+    return JSONResponse(json.loads(sf.read_text(encoding="utf-8")))
 
 
 @app.post("/api/query")

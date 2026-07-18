@@ -1,0 +1,162 @@
+---
+# CacheBlend inference path: vLLM + APC + LMCache + CacheBlend via NVIDIA Dynamo.
+# Exposes an OpenAI-compatible API on svc/inference-cacheblend:8002.
+#
+# This is the optimized path. On top of APC (prefix reuse), LMCache adds:
+#   • Chunk-level KV cache storage: each retrieved document chunk's KV state
+#     is stored and reused regardless of its position in the assembled context.
+#   • CacheBlend: blends stored chunk KV states into the current request's
+#     attention computation, avoiding full re-computation for repeated chunks
+#     even when they appear in different orderings across requests.
+#
+# This is especially valuable for RAG workloads where the same document chunk
+# may appear as hit #3 in one query and hit #1 in another — APC alone would
+# miss both; CacheBlend reuses both.
+#
+# The NVIDIA Dynamo image ships vLLM + LMCache pre-integrated. LMCache is
+# activated by setting LMCACHE_CONFIG_FILE and using the LMCacheConnector
+# as vLLM's KV transfer backend.
+#
+# GPU requirement: same as baseline. Both paths can coexist on one large GPU
+# (e.g. 96 GB) with gpu-memory-utilization split between them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-cacheblend
+  namespace: retriever
+  labels:
+    app: inference-cacheblend
+    inference-path: cacheblend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inference-cacheblend
+  template:
+    metadata:
+      labels:
+        app: inference-cacheblend
+        inference-path: cacheblend
+    spec:
+      imagePullSecrets:
+        - name: retriever-ngc-image-pull-secret
+      containers:
+        - name: dynamo-vllm
+          # Dynamo vLLM Runtime — packages vLLM + LMCache + CacheBlend + NIXL.
+          # Latest: 1.2.1 (June 2026). Check NGC Tags tab for newer versions:
+          # https://catalog.ngc.nvidia.com/orgs/nvidia/ai-dynamo/containers/vllm
+          image: nvcr.io/nvidia/ai-dynamo/vllm:1.2.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - vllm.entrypoints.openai.api_server
+          args:
+            - --model=$(LLM_MODEL)
+            - --host=0.0.0.0
+            - --port=8000
+            - --enable-prefix-caching          # APC still active; CacheBlend complements it
+            - --max-model-len=8192
+            - --gpu-memory-utilization=0.45    # mirror baseline; both on same physical GPU
+            - --served-model-name=cacheblend
+            - --disable-log-requests
+            # LMCache KV connector — activates CacheBlend alongside APC.
+            # Connector name may vary by Dynamo/LMCache version; check the image docs.
+            # Alternatives: "LMCacheConnector", "LMCacheConnectorFull"
+            - --kv-transfer-config={"kv_connector":"LMCacheConnectorFull","kv_role":"kv_both","kv_connector_extra_config":{"lmcache_config_file":"/etc/lmcache/lmcache.yaml"}}
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: llm_model
+                  optional: true
+            - name: LLM_MODEL
+              value: "meta-llama/Llama-3.1-8B-Instruct"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: hf_token
+                  optional: true
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inference-config
+                  key: hf_token
+                  optional: true
+            - name: NGC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: retriever-ngc-api-secret
+                  key: NGC_API_KEY
+                  optional: true
+            # Tell LMCache where its config lives (also consumed by vLLM plugin hooks).
+            - name: LMCACHE_CONFIG_FILE
+              value: /etc/lmcache/lmcache.yaml
+            # Optional: tune LMCache chunk granularity at the env level.
+            # Overridden by the config file; useful for quick experiments.
+            - name: LMCACHE_CHUNK_SIZE
+              value: "256"
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 10
+          volumeMounts:
+            - name: lmcache-config
+              mountPath: /etc/lmcache
+              readOnly: true
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+            # LMCache CPU offload lives here; back with a large tmpfs or PVC in prod.
+            - name: lmcache-store
+              mountPath: /tmp/lmcache
+      volumes:
+        - name: lmcache-config
+          configMap:
+            name: lmcache-config
+        - name: model-cache
+          emptyDir: {}
+        - name: lmcache-store
+          emptyDir:
+            medium: Memory   # fast CPU KV offload; replace with emptyDir:{} if RAM is tight
+            sizeLimit: 40Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-cacheblend
+  namespace: retriever
+  labels:
+    app: inference-cacheblend
+    inference-path: cacheblend
+spec:
+  selector:
+    app: inference-cacheblend
+  ports:
+    - name: http
+      port: 8002
+      targetPort: 8000
+  type: ClusterIP
