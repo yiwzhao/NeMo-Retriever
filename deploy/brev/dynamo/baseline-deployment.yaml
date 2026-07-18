@@ -55,7 +55,7 @@ spec:
             - --max-model-len=8192           # cap context to limit VRAM; raise for 70B
             - --gpu-memory-utilization=0.45  # leave headroom for the other path on same GPU
             - --served-model-name=baseline
-            - --disable-log-requests
+            - --no-enable-log-requests
           ports:
             - containerPort: 8000
               name: http

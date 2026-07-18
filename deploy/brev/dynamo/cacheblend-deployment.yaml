@@ -59,11 +59,9 @@ spec:
             - --max-model-len=8192
             - --gpu-memory-utilization=0.45    # mirror baseline; both on same physical GPU
             - --served-model-name=cacheblend
-            - --disable-log-requests
-            # LMCache KV connector — activates CacheBlend alongside APC.
-            # Connector name may vary by Dynamo/LMCache version; check the image docs.
-            # Alternatives: "LMCacheConnector", "LMCacheConnectorFull"
-            - --kv-transfer-config={"kv_connector":"LMCacheConnectorFull","kv_role":"kv_both","kv_connector_extra_config":{"lmcache_config_file":"/etc/lmcache/lmcache.yaml"}}
+            - --no-enable-log-requests
+            # LMCache KV connector: quotes are required so YAML doesn't parse { as a flow mapping.
+            - '--kv-transfer-config={"kv_connector":"LMCacheConnector","kv_role":"kv_both"}'
           ports:
             - containerPort: 8000
               name: http
