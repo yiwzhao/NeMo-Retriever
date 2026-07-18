@@ -19,7 +19,7 @@
 #
 # Optional env vars:
 #   LLM_MODEL     HuggingFace model ID  (default: meta-llama/Llama-3.1-8B-Instruct)
-#   DYNAMO_IMAGE  NGC image ref         (default: nvcr.io/nvidia/ai-dynamo/vllm:1.2.1)
+#   DYNAMO_IMAGE  NGC image ref         (default: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1)
 #   NS            Kubernetes namespace  (default: retriever)
 # -----------------------------------------------------------------------------
 set -euo pipefail
@@ -28,7 +28,7 @@ NS="${NS:-retriever}"
 LLM_MODEL="${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 # NGC catalog: https://catalog.ngc.nvidia.com/orgs/nvidia/ai-dynamo/containers/vllm
 # Latest tag as of 2026-07-17: 1.2.1
-DYNAMO_IMAGE="${DYNAMO_IMAGE:-nvcr.io/nvidia/ai-dynamo/vllm:1.2.1}"
+DYNAMO_IMAGE="${DYNAMO_IMAGE:-nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DYNAMO_DIR="${REPO_ROOT}/deploy/brev/dynamo"
@@ -103,11 +103,11 @@ log "Applying LMCache ConfigMap"
 kubectl apply -f "${DYNAMO_DIR}/lmcache-configmap.yaml"
 
 log "Deploying baseline path (vLLM + APC) → svc/inference-baseline:8001"
-sed "s|nvcr.io/nvidia/ai-dynamo/vllm:1.2.1|${DYNAMO_IMAGE}|g" \
+sed "s|nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1|${DYNAMO_IMAGE}|g" \
   "${DYNAMO_DIR}/baseline-deployment.yaml" | kubectl apply -f -
 
 log "Deploying CacheBlend path (vLLM + APC + LMCache) → svc/inference-cacheblend:8002"
-sed "s|nvcr.io/nvidia/ai-dynamo/vllm:1.2.1|${DYNAMO_IMAGE}|g" \
+sed "s|nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1|${DYNAMO_IMAGE}|g" \
   "${DYNAMO_DIR}/cacheblend-deployment.yaml" | kubectl apply -f -
 
 # ── 5. Wait for rollout ───────────────────────────────────────────────────────

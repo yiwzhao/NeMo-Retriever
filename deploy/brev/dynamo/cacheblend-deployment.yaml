@@ -45,7 +45,7 @@ spec:
           # Dynamo vLLM Runtime — packages vLLM + LMCache + CacheBlend + NIXL.
           # Latest: 1.2.1 (June 2026). Check NGC Tags tab for newer versions:
           # https://catalog.ngc.nvidia.com/orgs/nvidia/ai-dynamo/containers/vllm
-          image: nvcr.io/nvidia/ai-dynamo/vllm:1.2.1
+          image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -73,9 +73,7 @@ spec:
                 secretKeyRef:
                   name: inference-config
                   key: llm_model
-                  optional: true
-            - name: LLM_MODEL
-              value: "meta-llama/Llama-3.1-8B-Instruct"
+                  optional: false
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
