@@ -93,26 +93,25 @@ print(f'Model cached at: {path}')
 " 2>&1 || warn "Model pre-download failed — vLLM will download on first start (slower)"
 
 # ── 5. LMCache configuration ──────────────────────────────────────────────────
-log "Writing LMCache config to ${LMCACHE_CONFIG}"
+log "Writing LMCache V1 config to ${LMCACHE_CONFIG}"
 cat > "${LMCACHE_CONFIG}" << 'YAML_EOF'
-# LMCache engine configuration for CacheBlend path.
+# LMCache V1 engine configuration (lmcache 0.5+).
 #
 # CacheBlend reuses cached KV chunks for retrieved document segments even when
 # they appear at different positions across requests — complementing APC which
 # only handles contiguous prefix matches.
-#
-# chunk_size: KV cache chunk size in tokens. Smaller = finer reuse granularity.
 chunk_size: 256
 
-# CPU offload: store KV chunk cache in host RAM between requests.
-# This persists across multiple queries, enabling warm-cache reuse.
-local_device: cpu
+# CPU offload: store KV chunk states in host RAM between requests.
+# Enables warm-cache reuse across multiple queries.
+local_cpu: true
 max_local_cpu_size: 20
 
-# CacheBlend: blend cached KV chunks into attention computation rather than
-# requiring an exact prefix match (which APC requires).
+# Enable CacheBlend: reuse cached KV at non-prefix positions.
 enable_blending: true
-blend_ratio: 0.5
+
+# Minimum tokens in a chunk before blending is considered.
+blend_min_tokens: 128
 YAML_EOF
 
 # ── 6. Kill any existing vLLM processes ───────────────────────────────────────
@@ -126,6 +125,7 @@ sleep 2
 # ── 7. Start baseline path: vLLM + APC ────────────────────────────────────────
 log "Starting baseline path: vLLM + APC → port 8001"
 log "  log: ${BASELINE_LOG}"
+VLLM_USE_FLASHINFER_SAMPLER=0 \
 nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
     --host 0.0.0.0 \
@@ -135,7 +135,7 @@ nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --max-model-len "${MAX_MODEL_LEN}" \
     --served-model-name baseline \
     --max-num-seqs 8 \
-    --disable-log-requests \
+    --no-enable-log-requests \
     > "${BASELINE_LOG}" 2>&1 &
 BASELINE_PID=$!
 echo "  PID: ${BASELINE_PID}"
@@ -144,6 +144,7 @@ echo "  PID: ${BASELINE_PID}"
 log "Starting CacheBlend path: vLLM + APC + LMCache → port 8002"
 log "  log: ${CACHEBLEND_LOG}"
 log "  lmcache config: ${LMCACHE_CONFIG}"
+VLLM_USE_FLASHINFER_SAMPLER=0 \
 LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG}" \
 nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
@@ -154,8 +155,8 @@ nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --max-model-len "${MAX_MODEL_LEN}" \
     --served-model-name cacheblend \
     --max-num-seqs 8 \
-    --disable-log-requests \
-    --kv-transfer-config '{"kv_connector":"LMCacheConnector","kv_role":"kv_both"}' \
+    --no-enable-log-requests \
+    --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}' \
     > "${CACHEBLEND_LOG}" 2>&1 &
 CACHEBLEND_PID=$!
 echo "  PID: ${CACHEBLEND_PID}"

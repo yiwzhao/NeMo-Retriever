@@ -361,7 +361,7 @@ def run_inference_benchmark(
                 hits, _ = retrieve_context(q, top_k)
                 for path, url in PATHS.items():
                     # consume the full stream silently to fill the KV cache
-                    for _ in rag_stream(q, url, model=model, pre_fetched_hits=hits):
+                    for _ in rag_stream(q, url, model=path, pre_fetched_hits=hits):
                         pass
             _log("Warm-up done.")
 
@@ -385,7 +385,7 @@ def run_inference_benchmark(
                     "retrieval_ms": round(retrieval_ms, 1),
                 }
                 full_response = []
-                for event in rag_stream(question, url, model=model,
+                for event in rag_stream(question, url, model=path,
                                         pre_fetched_hits=hits):
                     if event["type"] == "token":
                         full_response.append(event["text"])

@@ -673,6 +673,7 @@ async def rag_stream(request: Request) -> StreamingResponse:
     llm_url = inf.PATHS[path]
     return StreamingResponse(
         inf.rag_stream_sse(question, llm_url, top_k=top_k,
+                           model=path,
                            pre_fetched_hits=shared_hits or None),
         media_type="text/event-stream",
     )
