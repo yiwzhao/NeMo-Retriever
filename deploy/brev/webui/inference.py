@@ -44,30 +44,60 @@ _RAG_SYSTEM = (
 # ── vLLM / LMCache metrics ────────────────────────────────────────────────────
 
 def get_vllm_metrics(base_url: str) -> dict:
-    """Scrape vLLM Prometheus /metrics for KV cache statistics."""
-    want = {
-        "vllm:gpu_cache_usage_perc",
-        "vllm:cpu_cache_usage_perc",
-        "vllm:prefix_cache_hit_rate",
-        # LMCache adds these when CacheBlend is active
-        "lmcache:hit_ratio",
-        "lmcache:blend_ratio",
-        "lmcache:local_cpu_cache_usage",
+    """Scrape vLLM Prometheus /metrics and compute KV cache hit ratios.
+
+    vLLM 0.25 exposes counters, not pre-computed rates:
+      vllm:prefix_cache_queries_total   — APC tokens queried
+      vllm:prefix_cache_hits_total      — APC tokens hit
+      vllm:external_prefix_cache_queries_total — tokens forwarded to LMCache
+      vllm:external_prefix_cache_hits_total    — tokens served by LMCache/CacheBlend
+      vllm:kv_cache_usage_perc          — GPU KV block occupancy (0-1)
+
+    Returns keys consumed by rag_stream():
+      vllm:prefix_cache_hit_rate  — APC hit rate (hits/queries)
+      vllm:gpu_cache_usage_perc   — GPU KV cache occupancy
+      lmcache:hit_ratio           — LMCache hit rate (ext_hits/ext_queries)
+      lmcache:blend_ratio         — blend contribution (ext_hits/total_queries)
+    """
+    COUNTERS = {
+        "vllm:prefix_cache_queries_total",
+        "vllm:prefix_cache_hits_total",
+        "vllm:external_prefix_cache_queries_total",
+        "vllm:external_prefix_cache_hits_total",
+        "vllm:kv_cache_usage_perc",
     }
-    out: dict = {}
+    raw: dict = {}
     try:
         text = requests.get(f"{base_url}/metrics", timeout=5).text
         for line in text.splitlines():
             if line.startswith("#"):
                 continue
-            for key in want:
+            for key in COUNTERS:
                 if line.startswith(key + " ") or line.startswith(key + "{"):
                     try:
-                        out[key] = float(line.split()[-1])
+                        raw[key] = float(line.split()[-1])
                     except (IndexError, ValueError):
                         pass
     except Exception:  # noqa: BLE001
-        pass
+        return {}
+
+    out: dict = {}
+
+    apc_q = raw.get("vllm:prefix_cache_queries_total", 0.0)
+    apc_h = raw.get("vllm:prefix_cache_hits_total", 0.0)
+    if apc_q > 0:
+        out["vllm:prefix_cache_hit_rate"] = round(apc_h / apc_q, 4)
+
+    ext_q = raw.get("vllm:external_prefix_cache_queries_total", 0.0)
+    ext_h = raw.get("vllm:external_prefix_cache_hits_total", 0.0)
+    if ext_q > 0:
+        out["lmcache:hit_ratio"] = round(ext_h / ext_q, 4)
+    if apc_q > 0 and ext_h > 0:
+        out["lmcache:blend_ratio"] = round(ext_h / apc_q, 4)
+
+    if "vllm:kv_cache_usage_perc" in raw:
+        out["vllm:gpu_cache_usage_perc"] = raw["vllm:kv_cache_usage_perc"]
+
     return out
 
 
