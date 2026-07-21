@@ -138,7 +138,13 @@ _lock = threading.Lock()
 _KEY_RE = re.compile(r"nvapi-[A-Za-z0-9_\-]+")
 
 def _inference_portforward_manager() -> None:
-    """Keep port-forwards alive for both inference paths (best-effort, non-blocking)."""
+    """Keep port-forwards alive for k8s-deployed inference paths.
+
+    Skipped when INFERENCE_MODE=host (vLLM runs directly on the host at ports
+    8001/8002 — no kubectl port-forward needed in that case).
+    """
+    if os.environ.get("INFERENCE_MODE") == "host":
+        return  # host-based vLLM; ports are already on localhost
     kubeconfig = os.environ.get("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
     procs: dict[str, object] = {}
     while True:
