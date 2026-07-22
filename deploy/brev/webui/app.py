@@ -280,7 +280,10 @@ def logs() -> StreamingResponse:
                 return
             time.sleep(0.4)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 
 
 # ── live service proxy (playground) ──────────────────────────────────────────
@@ -530,7 +533,10 @@ def dataset_logs() -> StreamingResponse:
                 return
             time.sleep(0.5)
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 
 
 # ── benchmark harness (retrieval-only v1) ────────────────────────────────────
@@ -604,7 +610,10 @@ def benchmark_logs() -> StreamingResponse:
                 yield f"event: end\ndata: {json.dumps({'phase': phase})}\n\n"
                 return
             time.sleep(0.5)
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 
 
 @app.get("/api/benchmark/runs")
@@ -676,6 +685,11 @@ async def rag_stream(request: Request) -> StreamingResponse:
                            model=path,
                            pre_fetched_hits=shared_hits or None),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 
@@ -748,7 +762,10 @@ def ibench_logs() -> StreamingResponse:
                 yield f"event: end\ndata: {json.dumps({'phase': phase})}\n\n"
                 return
             time.sleep(0.5)
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 
 
 @app.get("/api/inference/benchmark/summary")
