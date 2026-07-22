@@ -65,6 +65,43 @@ log "Installed versions:"
 "${VENV}/bin/python" -c "import vllm; print(f'  vLLM     : {vllm.__version__}')" 2>/dev/null || true
 "${VENV}/bin/python" -c "import lmcache; print(f'  LMCache  : {lmcache.__version__}')" 2>/dev/null || true
 
+# ── 2.5. Patch vLLM model_runner for CacheBlend ──────────────────────────────
+# vLLM 0.25 never calls VLLMModelTracker.register_model(), which CacheBlend
+# requires to find the model instance. Apply a one-time idempotent patch after
+# every pip install so reinstalls don't silently break port 8002.
+log "Patching vLLM model_runner.py for CacheBlend (VLLMModelTracker)"
+RUNNER="$(find "${VENV}/lib" -name "model_runner.py" \
+          -path "*/vllm/v1/worker/gpu/model_runner.py" 2>/dev/null | head -1)"
+if [[ -z "${RUNNER}" ]]; then
+    warn "model_runner.py not found — skipping patch (CacheBlend may fail)"
+elif grep -q "VLLMModelTracker" "${RUNNER}" 2>/dev/null; then
+    log "  patch already present, skipping"
+else
+    "${VENV}/bin/python" - "${RUNNER}" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+ANCHOR = "        if self.lora_config:"
+PATCH = (
+    "        # Register model with LMCache so CacheBlend can find it.\n"
+    "        # vLLM 0.25 never calls this; without it CacheBlend raises\n"
+    "        # ValueError: vllm model for vllm-instance not found.\n"
+    "        try:\n"
+    "            from lmcache.v1.compute.models.utils import VLLMModelTracker\n"
+    "            VLLMModelTracker.register_model(\"vllm-instance\", self.model)\n"
+    "        except Exception:\n"
+    "            pass\n"
+    "        if self.lora_config:"
+)
+if ANCHOR not in src:
+    print(f"WARNING: patch anchor not found in {p} — vLLM version may have changed", flush=True)
+    sys.exit(0)
+p.write_text(src.replace(ANCHOR, PATCH, 1), encoding="utf-8")
+print(f"  patch applied to {p}", flush=True)
+PYEOF
+    log "  patch applied"
+fi
+
 # ── 3. GPU sanity check ────────────────────────────────────────────────────────
 log "GPU memory status:"
 nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free \
