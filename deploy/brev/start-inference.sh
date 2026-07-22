@@ -18,18 +18,24 @@
 #   ./deploy/brev/start-inference.sh 2>&1 | tee ~/inference.log
 #
 # Optional env vars:
-#   LLM_MODEL          HuggingFace model ID  (default: Qwen/Qwen2.5-7B-Instruct)
+#   LLM_MODEL          HuggingFace model ID  (default: meta-llama/Llama-3.1-8B-Instruct)
 #   GPU_MEM_UTIL       fraction of GPU for each vLLM (default: 0.20)
 #   MAX_MODEL_LEN      max context length (default: 4096)
-#   HF_TOKEN           HuggingFace token for gated models (optional)
+#   HF_TOKEN           HuggingFace token for gated models (e.g. Llama)
 #   RETRIEVER_URL      NeMo Retriever URL (default: http://localhost:7670)
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-LLM_MODEL="${LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+LLM_MODEL="${LLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.20}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 RETRIEVER_URL="${RETRIEVER_URL:-http://localhost:7670}"
+# HF cache may live on /ephemeral on Brev instances (larger disk)
+HF_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HUB_CACHE:-}}"
+[[ -z "${HF_HUB_CACHE}" && -d "/ephemeral/cache/huggingface/hub" ]] && \
+  HF_HUB_CACHE="/ephemeral/cache/huggingface/hub"
+export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
+[[ -n "${HF_TOKEN:-}" ]] && export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WEBUI_DIR="${REPO_ROOT}/deploy/brev/webui"
@@ -176,6 +182,23 @@ nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     > "${BASELINE_LOG}" 2>&1 &
 BASELINE_PID=$!
 echo "  PID: ${BASELINE_PID}"
+
+# ── 7.5. Wait for baseline to be ready before starting CacheBlend ─────────────
+# IMPORTANT: do NOT start both vLLM instances simultaneously.
+# Both load ~16 GB of model weights; concurrent loading exhausts GPU memory
+# and causes the k8s NIMs to be evicted (disk/memory pressure).
+log "Waiting for baseline (port 8001) to finish loading before starting CacheBlend…"
+WAIT_DEADLINE=$(( SECONDS + 1200 ))  # 20 min max
+while [[ $SECONDS -lt $WAIT_DEADLINE ]]; do
+    if curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+        log "  baseline READY — starting CacheBlend"
+        break
+    fi
+    sleep 10
+done
+if ! curl -sf http://localhost:8001/health >/dev/null 2>&1; then
+    die "Baseline did not become ready within 20 min. Check ${BASELINE_LOG}"
+fi
 
 # ── 8. Start CacheBlend path: vLLM + APC + LMCache ───────────────────────────
 log "Starting CacheBlend path: vLLM + APC + LMCache → port 8002"
