@@ -184,9 +184,12 @@ def _append(line: str) -> None:
             del _log[: len(_log) - 8000]
 
 
-def _run_bootstrap(ngc_key: str) -> None:
+def _run_bootstrap(ngc_key: str, hf_token: str = "") -> None:
     env = dict(os.environ)
     env["NGC_API_KEY"] = ngc_key
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+        env["HUGGING_FACE_HUB_TOKEN"] = hf_token
     env.setdefault("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
     with _lock:
         _log.clear()
@@ -240,6 +243,7 @@ def third_party_data() -> HTMLResponse:
 async def deploy(request: Request) -> JSONResponse:
     body = await request.json()
     key = (body or {}).get("ngc_api_key", "").strip()
+    hf_token = (body or {}).get("hf_token", "").strip()
     if not key:
         return JSONResponse({"error": "Enter your NGC API key (nvapi-...)."}, status_code=400)
     try:
@@ -249,10 +253,18 @@ async def deploy(request: Request) -> JSONResponse:
             {"error": "Key contains non-ASCII characters — paste your real nvapi-... key."},
             status_code=400,
         )
+    if hf_token:
+        try:
+            hf_token.encode("ascii")
+        except UnicodeEncodeError:
+            return JSONResponse(
+                {"error": "HuggingFace token contains non-ASCII characters."},
+                status_code=400,
+            )
     with _lock:
         if _state["running"]:
             return JSONResponse({"error": "A deployment is already running."}, status_code=409)
-    threading.Thread(target=_run_bootstrap, args=(key,), daemon=True).start()
+    threading.Thread(target=_run_bootstrap, args=(key, hf_token), daemon=True).start()
     return JSONResponse({"started": True})
 
 

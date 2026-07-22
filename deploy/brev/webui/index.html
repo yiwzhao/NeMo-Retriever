@@ -86,6 +86,10 @@ SPDX-License-Identifier: Apache-2.0
     <input id="key" type="password" placeholder="nvapi-..." autocomplete="off" spellcheck="false" />
     <div class="hint">Get one at <a href="https://org.ngc.nvidia.com/setup/api-keys" target="_blank">org.ngc.nvidia.com</a>.
       Deploying installs k3s + the GPU stack + NeMo Retriever; first run pulls model weights (10–30 min).</div>
+    <label style="margin-top:14px">HuggingFace token <span style="font-weight:400;color:#8b949e">(optional — required for gated models like Llama)</span></label>
+    <input id="hf-token" type="password" placeholder="hf_..." autocomplete="off" spellcheck="false" />
+    <div class="hint">Get one at <a href="https://huggingface.co/settings/tokens" target="_blank">huggingface.co/settings/tokens</a>.
+      Required if you set <code>LLM_MODEL</code> to a gated model (e.g. <code>meta-llama/Llama-3.1-8B-Instruct</code>). Leave blank for open models.</div>
     <div class="err" id="err1"></div>
     <div class="row" style="margin-top:18px">
       <button id="deployBtn">Deploy Launchable ▸</button>
@@ -179,11 +183,14 @@ function showStep(n){
 
 $("#deployBtn").onclick = async () => {
   const key = $("#key").value.trim();
+  const hfToken = $("#hf-token").value.trim();
   $("#err1").textContent = "";
   if (!key) { $("#err1").textContent = "Enter your NGC API key."; return; }
   $("#deployBtn").disabled = true;
+  const body = {ngc_api_key: key};
+  if (hfToken) body.hf_token = hfToken;
   const r = await fetch("/api/deploy", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ngc_api_key:key})});
+    body: JSON.stringify(body)});
   const d = await r.json();
   if (!r.ok) { $("#err1").textContent = d.error || "Failed to start."; $("#deployBtn").disabled=false; return; }
   showStep(2); startTimer(); streamLogs();
