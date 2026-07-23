@@ -559,6 +559,26 @@ def _run_dataset(mode: str) -> None:
             _ds.update(phase="failed", elapsed=int(time.monotonic() - t0))
 
 
+@app.get("/api/dataset/questions")
+def dataset_questions(n: int = 20, mode: str = "quick") -> JSONResponse:
+    """Return up to n questions from the T2-RAGBench dataset for the benchmark UI."""
+    if mode not in dd.MODES:
+        return JSONResponse({"error": f"unknown mode: {mode}"}, status_code=400)
+    try:
+        records = _collect_records(mode)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc), "questions": []})
+    questions = [q for _, q, _ in records if q]
+    total = len(questions)
+    sample = questions[:n]
+    return JSONResponse({
+        "questions": sample,
+        "total": total,
+        "mode": mode,
+        "dataset": "T2-RAGBench FinQA dev",
+    })
+
+
 @app.post("/api/dataset")
 async def dataset(request: Request) -> JSONResponse:
     body = await request.json()

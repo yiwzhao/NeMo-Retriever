@@ -281,12 +281,28 @@ details[open] summary::before { transform: rotate(90deg); }
 
 <!-- ── Benchmark view ── -->
 <div id="bench-view">
+
+  <!-- Dataset quick-load -->
+  <div style="padding:16px 24px 0;border-bottom:1px solid var(--border);margin-bottom:20px;padding-bottom:16px">
+    <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Load questions from T²-RAGBench dataset</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+      Uses the ingested FinQA financial document corpus — same questions the retriever was evaluated on.
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary" onclick="loadDatasetQuestions(10)">Load 10 questions</button>
+      <button class="btn btn-primary" onclick="loadDatasetQuestions(25)">Load 25 questions</button>
+      <button class="btn btn-primary" onclick="loadDatasetQuestions(50)">Load 50 questions</button>
+      <button class="btn btn-secondary" onclick="loadDatasetQuestions(883)">All 883 questions</button>
+      <span id="dataset-status" style="font-size:13px;color:var(--text-dim)"></span>
+    </div>
+  </div>
+
   <div class="bench-controls">
     <div class="form-group">
-      <label>Questions (one per line)</label>
-      <textarea id="bench-questions" style="width:400px;height:120px;padding:8px;border-radius:5px;
-        border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;resize:vertical;"
-        placeholder="Paste benchmark questions here…"></textarea>
+      <label>Questions (one per line) — or load from dataset above</label>
+      <textarea id="bench-questions" style="width:460px;height:140px;padding:10px;border-radius:5px;
+        border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;resize:vertical;"
+        placeholder="Paste your own questions here, one per line…&#10;&#10;Or click a button above to load real FinQA dataset questions."></textarea>
     </div>
     <div class="form-group">
       <label>Top-K context chunks</label>
@@ -626,6 +642,21 @@ function renderBenchResults(s) {
     <div class="stat-row"><span class="stat-name">Queries</span>
       <span class="stat-val">${s.questions}</span></div>`;
   el.appendChild(d);
+}
+
+// ── dataset question loader ────────────────────────────────────────────────────
+async function loadDatasetQuestions(n) {
+  const status = document.getElementById('dataset-status');
+  status.textContent = 'Loading…';
+  try {
+    const r = await fetch(`/api/dataset/questions?n=${n}&mode=quick`);
+    const d = await r.json();
+    if (d.error) { status.textContent = '✗ ' + d.error; return; }
+    document.getElementById('bench-questions').value = d.questions.join('\n');
+    status.textContent = `✓ Loaded ${d.questions.length} of ${d.total} questions from ${d.dataset}`;
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + e.message;
+  }
 }
 </script>
 </body>
