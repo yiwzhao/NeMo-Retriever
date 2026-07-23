@@ -11,11 +11,24 @@
 # The webui /compare page connects to them via localhost:8001 and localhost:8002.
 #
 # Usage:
+# Run this every time the instance restarts:
 #   cd ~/NeMo-Retriever
-#   git pull
-#   # Optional: set a different model (default: Qwen/Qwen2.5-7B-Instruct)
-#   # export LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct HF_TOKEN=hf_...
+#   git pull                            # pick up any updates
+#   export HF_TOKEN=hf_...             # required for Llama (gated model)
 #   ./deploy/brev/start-inference.sh 2>&1 | tee ~/inference.log
+#
+# What this script does end-to-end:
+#   0. Wait for NeMo Retriever k3s pods Running (auto after reboot, ~5 min)
+#   1. Create/update ~/inference-venv with vllm + lmcache
+#   2. Patch vLLM model_runner.py for CacheBlend (VLLMModelTracker)
+#   3. GPU sanity check
+#   4. Pre-download LLM model weights to HuggingFace cache
+#   5. Write ~/lmcache.yaml (LMCache V1 config)
+#   6. Kill any old vLLM processes on ports 8001/8002
+#   7. Start baseline vLLM (port 8001, APC only) — wait for READY
+#   8. Start CacheBlend vLLM (port 8002, APC+LMCache) — sequential after 7
+#   9. Restart Deploy UI (port 8000) — its thread auto-manages :7670 port-forward
+#  10. Check vectordb; auto re-ingest T2-RAGBench FinQA if empty
 #
 # Optional env vars:
 #   LLM_MODEL          HuggingFace model ID  (default: meta-llama/Llama-3.1-8B-Instruct)
@@ -54,6 +67,41 @@ log "Inference layer bootstrap (host-based)"
 log "  model          : ${LLM_MODEL}"
 log "  gpu-mem-util   : ${GPU_MEM_UTIL} per path"
 log "  max-model-len  : ${MAX_MODEL_LEN}"
+[[ -n "${HUGGINGFACE_HUB_CACHE:-}" ]] && log "  hf cache       : ${HUGGINGFACE_HUB_CACHE}"
+[[ -n "${HF_TOKEN:-}" ]]              && log "  hf token       : set"
+
+# ── 0. Wait for NeMo Retriever k3s pods to be Running ────────────────────────
+# On instance restart k3s comes back automatically but pods take a few minutes.
+# vLLM needs the GPU budget that NIMs occupy to be stable before we calculate
+# gpu-memory-utilization headroom.
+log "Waiting for NeMo Retriever k3s pods to be Running (max 15 min)"
+KUBECTL="kubectl"
+[[ -f /etc/rancher/k3s/k3s.yaml ]] && export KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+PODS_DEADLINE=$(( SECONDS + 900 ))
+
+_retriever_ready() {
+    local running
+    running=$("${KUBECTL}" get pods -n retriever 2>/dev/null \
+        | grep -c "1/1.*Running" || true)
+    [[ "${running}" -ge 4 ]]   # embed + ocr + vectordb + retriever-main
+}
+
+if ! _retriever_ready; then
+    log "  Pods not yet ready — waiting…"
+    while [[ $SECONDS -lt $PODS_DEADLINE ]]; do
+        if _retriever_ready; then
+            break
+        fi
+        RUNNING=$("${KUBECTL}" get pods -n retriever 2>/dev/null | grep -c "1/1.*Running" || true)
+        echo "  [$(date +%H:%M:%S)] ${RUNNING} pods Running (need ≥4)…"
+        sleep 20
+    done
+    if ! _retriever_ready; then
+        warn "NeMo Retriever pods did not reach Running in 15 min — proceeding anyway"
+        "${KUBECTL}" get pods -n retriever 2>/dev/null | grep -v Completed | grep -v Evicted || true
+    fi
+fi
+log "  NeMo Retriever pods: READY"
 
 # ── 1. Python venv ────────────────────────────────────────────────────────────
 log "Setting up inference venv at ${VENV}"
@@ -271,6 +319,47 @@ while [[ $SECONDS -lt $DEADLINE ]]; do
     grep -c "Loading safetensors checkpoint" "${BASELINE_LOG}" 2>/dev/null | xargs printf " baseline:shards=%s" || true
     echo ""
 done
+
+# ── 10.5. Check vectordb and re-ingest if empty ───────────────────────────────
+# The vectordb PVC uses local-path storage → data survives pod restarts on the
+# same instance. But if the instance was rebuilt or the PVC was lost, the index
+# is empty and retrieval returns 0 hits. Detect this and offer to re-ingest.
+if ${BASELINE_OK} && ${CACHEBLEND_OK}; then
+    log "Checking vectordb for ingested documents…"
+    # Wait for webui port-forward to the retriever to come up (managed by app.py)
+    RETRIEVER_WAIT=0
+    while [[ ${RETRIEVER_WAIT} -lt 60 ]]; do
+        if curl -sf "${RETRIEVER_URL}/v1/health" >/dev/null 2>&1; then break; fi
+        sleep 5; RETRIEVER_WAIT=$(( RETRIEVER_WAIT + 5 ))
+    done
+
+    if curl -sf "${RETRIEVER_URL}/v1/health" >/dev/null 2>&1; then
+        # A quick retrieval probe — if we get 0 hits the index is probably empty
+        HITS=$(curl -sf -X POST "${RETRIEVER_URL}/v1/query" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"test","top_k":1,"format":"hits"}' 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(len((d.get('results') or [{}])[0].get('hits',[])))" 2>/dev/null || echo "0")
+        if [[ "${HITS}" == "0" ]]; then
+            warn "Vectordb appears empty (0 hits). Re-ingesting T2-RAGBench FinQA dataset…"
+            if [[ -d "${HOME}/t2-ragbench/data/FinQA" ]]; then
+                RETRIEVER_URL="${RETRIEVER_URL}" \
+                "${DEPLOY_VENV}/bin/python" \
+                    "${WEBUI_DIR}/benchmark.py" quick --no-qa 2>&1 \
+                    | grep -E "ingested|Ingesting|chunks|Hit@|failed|ERROR" || true
+                log "  Re-ingest complete."
+            else
+                warn "Dataset not found at ${HOME}/t2-ragbench — download with:"
+                warn "  ${DEPLOY_VENV}/bin/python ${REPO_ROOT}/deploy/brev/download_dataset.py quick"
+                warn "  RETRIEVER_URL=${RETRIEVER_URL} ${DEPLOY_VENV}/bin/python ${WEBUI_DIR}/benchmark.py quick --no-qa"
+            fi
+        else
+            log "  Vectordb OK (${HITS} hits on probe query) — skipping re-ingest."
+        fi
+    else
+        warn "Retriever not reachable at ${RETRIEVER_URL} — skipping vectordb check."
+        warn "The webui port-forward manager will retry in the background."
+    fi
+fi
 
 # ── 11. Final status ──────────────────────────────────────────────────────────
 echo ""
