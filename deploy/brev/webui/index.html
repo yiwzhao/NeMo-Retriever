@@ -116,7 +116,8 @@ SPDX-License-Identifier: Apache-2.0
     <span class="tag">Ready</span>
     <h2>Your stack is <span class="g">live</span></h2>
     <p class="sub">Service health: <span id="healthDot" class="pill">checking…</span>
-      &nbsp;·&nbsp; <a href="/compare" style="color:var(--g)">Open side-by-side comparison ▸</a></p>
+      &nbsp;·&nbsp; <a href="/compare" style="color:var(--g)">Open side-by-side comparison ▸</a>
+      &nbsp;·&nbsp; <a href="#" onclick="startOver();return false;" style="color:#8b949e;font-size:12px">↩ Start over</a></p>
 
     <div class="grid" id="stats" class="hidden">
       <div class="stat"><b id="stDocs">–</b><span>Documents</span></div>
@@ -168,11 +169,25 @@ fetch("/api/config").then(r=>r.json()).then(c=>{
     : `Open the full walkthrough in Jupyter: <code>deploy/brev/notebooks/nemo_retriever_quickstart.ipynb</code>`;
 });
 
-// If a deploy is already running/finished (page reload), resume the right step.
-fetch("/api/status").then(r=>r.json()).then(s=>{
-  if (s.phase === "running") { showStep(2); streamLogs(); }
-  else if (s.phase === "done") { showStep(3); onLive(); }
-});
+// ?reset in URL → reset state and stay on step 1
+if (new URLSearchParams(location.search).has("reset")) {
+  fetch("/api/reset", {method:"POST"}).then(() => {
+    history.replaceState({}, "", location.pathname);
+  });
+} else {
+  // If a deploy is already running/finished (page reload), resume the right step.
+  fetch("/api/status").then(r=>r.json()).then(s=>{
+    if (s.phase === "running") { showStep(2); streamLogs(); }
+    else if (s.phase === "done") { showStep(3); onLive(); }
+  });
+}
+
+async function startOver() {
+  const r = await fetch("/api/reset", {method:"POST"});
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  showStep(1);
+}
 
 function showStep(n){
   for (const i of [1,2,3]) {

@@ -277,6 +277,17 @@ def third_party_data() -> HTMLResponse:
 
 
 # ── deploy ───────────────────────────────────────────────────────────────────
+@app.post("/api/reset")
+async def reset_state() -> JSONResponse:
+    """Reset deploy state so the UI returns to Step 1 (Connect)."""
+    with _lock:
+        if _state.get("running"):
+            return JSONResponse({"error": "A deployment is running — wait for it to finish."}, status_code=409)
+        _log.clear()
+        _state.update(phase="idle", running=False, done=False, ok=False)
+    return JSONResponse({"reset": True})
+
+
 @app.post("/api/deploy")
 async def deploy(request: Request) -> JSONResponse:
     body = await request.json()
