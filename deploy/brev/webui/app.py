@@ -35,6 +35,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]  # .../NeMo-Retriever
 BOOTSTRAP = REPO_ROOT / "deploy" / "brev" / "bootstrap.sh"
+START_INFERENCE = REPO_ROOT / "deploy" / "brev" / "start-inference.sh"
 DATA_DIR = REPO_ROOT / "data"
 INDEX_HTML = HERE / "index.html"
 
@@ -184,6 +185,26 @@ def _append(line: str) -> None:
             del _log[: len(_log) - 8000]
 
 
+def _run_script(cmd: list, cwd: str, env: dict, label: str) -> bool:
+    """Run a subprocess, streaming its output to the shared log. Returns True on success."""
+    _append(f"==> {label}")
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            _append(line.rstrip("\n"))
+        rc = proc.wait()
+        _append(f"==> {label} exited with code {rc}")
+        return rc == 0
+    except Exception as exc:  # noqa: BLE001
+        _append(f"ERROR running {label}: {exc}")
+        return False
+
+
 def _run_bootstrap(ngc_key: str, hf_token: str = "") -> None:
     env = dict(os.environ)
     env["NGC_API_KEY"] = ngc_key
@@ -191,32 +212,42 @@ def _run_bootstrap(ngc_key: str, hf_token: str = "") -> None:
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
     env.setdefault("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
+    # Auto-detect HuggingFace cache on Brev /ephemeral volume
+    if not env.get("HUGGINGFACE_HUB_CACHE") and pathlib.Path("/ephemeral/cache/huggingface/hub").is_dir():
+        env["HUGGINGFACE_HUB_CACHE"] = "/ephemeral/cache/huggingface/hub"
+
     with _lock:
         _log.clear()
-        _state.update(phase="running", running=True, done=False, ok=False)
-    _append(f"==> Starting bootstrap.sh ({BOOTSTRAP})")
-    try:
-        proc = subprocess.Popen(
-            ["bash", str(BOOTSTRAP)],
-            cwd=str(REPO_ROOT),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            _append(line.rstrip("\n"))
-        rc = proc.wait()
-        ok = rc == 0
-        _append(f"==> bootstrap.sh exited with code {rc}")
-        with _lock:
-            _state.update(running=False, done=True, ok=ok, phase="done" if ok else "failed")
-    except Exception as exc:  # noqa: BLE001
-        _append(f"ERROR: {exc}")
+        _state.update(phase="retriever", running=True, done=False, ok=False)
+
+    # ── Phase 1: NeMo Retriever (k3s + NIMs) ──────────────────────────────────
+    ok = _run_script(
+        ["bash", str(BOOTSTRAP)], str(REPO_ROOT), env,
+        f"Phase 1/2 — NeMo Retriever bootstrap ({BOOTSTRAP.name})",
+    )
+    if not ok:
+        _append("==> bootstrap.sh failed — skipping inference layer startup")
         with _lock:
             _state.update(running=False, done=True, ok=False, phase="failed")
+        return
+
+    with _lock:
+        _state.update(phase="inference")
+
+    # ── Phase 2: Inference layer (vLLM baseline + CacheBlend + webui) ─────────
+    if not START_INFERENCE.is_file():
+        _append(f"WARNING: {START_INFERENCE} not found — skipping inference layer")
+    else:
+        _append("==> Phase 2/2 — Inference layer (vLLM + LMCache)")
+        _append("    This restarts the current webui process at the end.")
+        _append("    The page may reload — that is expected.")
+        ok = _run_script(
+            ["bash", str(START_INFERENCE)], str(REPO_ROOT), env,
+            f"Phase 2/2 — Inference layer ({START_INFERENCE.name})",
+        )
+
+    with _lock:
+        _state.update(running=False, done=True, ok=ok, phase="done" if ok else "failed")
 
 
 # ── pages ────────────────────────────────────────────────────────────────────

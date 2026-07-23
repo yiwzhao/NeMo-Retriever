@@ -80,16 +80,16 @@ SPDX-License-Identifier: Apache-2.0
   <div class="card" id="card1">
     <span class="tag">Configuration</span>
     <h2>Connect to <span class="g">NGC</span></h2>
-    <p class="sub">Paste your NVIDIA NGC API key. It pulls the service image and the NIM
-      model weights, and is used only on this node.</p>
+    <p class="sub">One-click setup: NeMo Retriever + vLLM APC baseline + LMCache CacheBlend.
+      Two API keys are required; the rest is automatic.</p>
     <label>NGC API key</label>
     <input id="key" type="password" placeholder="nvapi-..." autocomplete="off" spellcheck="false" />
     <div class="hint">Get one at <a href="https://org.ngc.nvidia.com/setup/api-keys" target="_blank">org.ngc.nvidia.com</a>.
-      Deploying installs k3s + the GPU stack + NeMo Retriever; first run pulls model weights (10–30 min).</div>
-    <label style="margin-top:14px">HuggingFace token <span style="font-weight:400;color:#8b949e">(optional — required for gated models like Llama)</span></label>
+      Used to pull NIM container images and model weights.</div>
+    <label style="margin-top:14px">HuggingFace token <span style="font-weight:400;color:#8b949e">(required for Llama)</span></label>
     <input id="hf-token" type="password" placeholder="hf_..." autocomplete="off" spellcheck="false" />
     <div class="hint">Get one at <a href="https://huggingface.co/settings/tokens" target="_blank">huggingface.co/settings/tokens</a>.
-      Required if you set <code>LLM_MODEL</code> to a gated model (e.g. <code>meta-llama/Llama-3.1-8B-Instruct</code>). Leave blank for open models.</div>
+      Required for <code>meta-llama/Llama-3.1-8B-Instruct</code> (default model). Leave blank for open-access models.</div>
     <div class="err" id="err1"></div>
     <div class="row" style="margin-top:18px">
       <button id="deployBtn">Deploy Launchable ▸</button>
@@ -101,8 +101,8 @@ SPDX-License-Identifier: Apache-2.0
   <div class="card hidden" id="card2">
     <span class="tag">In progress</span>
     <h2>Building your <span class="g">stack</span></h2>
-    <p class="sub">k3s → host GPU runtime → GPU Operator → NIM Operator → NeMo Retriever.
-      Weights download on first run.</p>
+    <p class="sub">Phase 1: k3s → GPU Operator → NIM Operator → NeMo Retriever (30–60 min) ·
+      Phase 2: vLLM + LMCache CacheBlend inference layer (5–15 min)</p>
     <div class="bar"><i id="prog"></i></div>
     <div class="row" style="justify-content:space-between">
       <span class="pill" id="phase">preflight…</span>
@@ -115,7 +115,8 @@ SPDX-License-Identifier: Apache-2.0
   <div class="card hidden" id="card3">
     <span class="tag">Ready</span>
     <h2>Your stack is <span class="g">live</span></h2>
-    <p class="sub">Service health: <span id="healthDot" class="pill">checking…</span></p>
+    <p class="sub">Service health: <span id="healthDot" class="pill">checking…</span>
+      &nbsp;·&nbsp; <a href="/compare" style="color:var(--g)">Open side-by-side comparison ▸</a></p>
 
     <div class="grid" id="stats" class="hidden">
       <div class="stat"><b id="stDocs">–</b><span>Documents</span></div>
@@ -201,14 +202,25 @@ function startTimer(){ t0 = Date.now(); timer = setInterval(()=>{
   $("#elapsed").textContent = `${Math.floor(s/60)}m ${s%60}s`;
 }, 1000); }
 
-const PHASES = ["k3s","GPU runtime","GPU Operator","NIM Operator","NeMo Retriever","Done"];
+const PHASES = [
+  "k3s", "GPU runtime", "GPU Operator", "NIM Operator",
+  "NeMo Retriever", "vLLM install", "Baseline (port 8001)",
+  "CacheBlend (port 8002)", "Done"
+];
 function updatePhase(line){
   let p = 0;
-  if (/GPU runtime|container-toolkit/i.test(line)) p=1;
-  if (/GPU Operator/i.test(line)) p=2;
-  if (/NIM Operator/i.test(line)) p=3;
-  if (/Installing NeMo Retriever/i.test(line)) p=4;
-  if (p) { $("#phase").textContent = PHASES[p] + "…"; $("#prog").style.width = (p*16)+"%"; }
+  if (/GPU runtime|container-toolkit/i.test(line))          p=1;
+  if (/GPU Operator/i.test(line))                           p=2;
+  if (/NIM Operator/i.test(line))                           p=3;
+  if (/Installing NeMo Retriever/i.test(line))              p=4;
+  if (/Phase 2.*Inference|Installing vLLM|inference-venv/i.test(line)) p=5;
+  if (/Starting baseline|port 8001/i.test(line))            p=6;
+  if (/Starting CacheBlend|port 8002/i.test(line))          p=7;
+  if (/Both paths READY|phase.*done/i.test(line))           p=8;
+  if (p) {
+    $("#phase").textContent = PHASES[p] + (p < 8 ? "…" : " ✓");
+    $("#prog").style.width = Math.round(p / (PHASES.length-1) * 100) + "%";
+  }
 }
 
 function streamLogs(){
