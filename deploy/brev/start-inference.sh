@@ -219,6 +219,7 @@ sleep 2
 log "Starting baseline path: vLLM + APC → port 8001"
 log "  log: ${BASELINE_LOG}"
 VLLM_USE_FLASHINFER_SAMPLER=0 \
+HUGGING_FACE_HUB_TOKEN="${HF_TOKEN:-}" \
 nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
     --host 0.0.0.0 \
@@ -256,6 +257,7 @@ log "  log: ${CACHEBLEND_LOG}"
 log "  lmcache config: ${LMCACHE_CONFIG}"
 VLLM_USE_FLASHINFER_SAMPLER=0 \
 LMCACHE_CONFIG_FILE="${LMCACHE_CONFIG}" \
+HUGGING_FACE_HUB_TOKEN="${HF_TOKEN:-}" \
 nohup "${VENV}/bin/python" -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
     --host 0.0.0.0 \
