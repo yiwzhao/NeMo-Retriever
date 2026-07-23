@@ -212,9 +212,16 @@ def _run_bootstrap(ngc_key: str, hf_token: str = "") -> None:
         env["HF_TOKEN"] = hf_token
         env["HUGGING_FACE_HUB_TOKEN"] = hf_token
     env.setdefault("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml")
-    # Auto-detect HuggingFace cache on Brev /ephemeral volume
-    if not env.get("HUGGINGFACE_HUB_CACHE") and pathlib.Path("/ephemeral/cache/huggingface/hub").is_dir():
-        env["HUGGINGFACE_HUB_CACHE"] = "/ephemeral/cache/huggingface/hub"
+    # Pin HF cache to /ephemeral (large disk on Brev) so model files don't land
+    # in the repo directory. Create the path if it doesn't exist yet.
+    if not env.get("HUGGINGFACE_HUB_CACHE"):
+        hf_cache = pathlib.Path("/ephemeral/cache/huggingface/hub")
+        try:
+            hf_cache.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            hf_cache = pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+            hf_cache.mkdir(parents=True, exist_ok=True)
+        env["HUGGINGFACE_HUB_CACHE"] = str(hf_cache)
 
     with _lock:
         _log.clear()

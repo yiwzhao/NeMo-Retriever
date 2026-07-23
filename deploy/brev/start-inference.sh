@@ -47,7 +47,9 @@ RETRIEVER_URL="${RETRIEVER_URL:-http://localhost:7670}"
 HF_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HUB_CACHE:-}}"
 [[ -z "${HF_HUB_CACHE}" && -d "/ephemeral/cache/huggingface/hub" ]] && \
   HF_HUB_CACHE="/ephemeral/cache/huggingface/hub"
-export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
+# Only export if non-empty — exporting "" causes huggingface_hub to treat
+# CWD as the cache root and dump model files into the repo directory.
+[[ -n "${HF_HUB_CACHE}" ]] && export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
 [[ -n "${HF_TOKEN:-}" ]] && export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -314,10 +316,13 @@ while [[ $SECONDS -lt $DEADLINE ]]; do
     fi
     ${BASELINE_OK} && ${CACHEBLEND_OK} && break
     sleep 15
-    # Print progress from logs
-    echo -n "  [$(date +%H:%M:%S)] loading"
-    grep -c "Loading safetensors checkpoint" "${BASELINE_LOG}" 2>/dev/null | xargs printf " baseline:shards=%s" || true
-    echo ""
+    # Print progress from logs (baseline and cacheblend)
+    B_SHARDS=$(grep -c "Loading safetensors checkpoint" "${BASELINE_LOG}" 2>/dev/null || echo 0)
+    C_SHARDS=$(grep -c "Loading safetensors checkpoint" "${CACHEBLEND_LOG}" 2>/dev/null || echo 0)
+    C_STATUS="loading"
+    grep -q "Application startup complete" "${CACHEBLEND_LOG}" 2>/dev/null && C_STATUS="READY"
+    grep -qE "ERROR|failed|Traceback" "${CACHEBLEND_LOG}" 2>/dev/null && C_STATUS="ERROR"
+    echo "  [$(date +%H:%M:%S)] baseline:${BASELINE_OK} cb:${C_STATUS}(shards=${C_SHARDS}/${B_SHARDS})"
 done
 
 # ── 10.5. Check vectordb and re-ingest if empty ───────────────────────────────
