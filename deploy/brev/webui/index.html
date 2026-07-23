@@ -154,24 +154,35 @@ SPDX-License-Identifier: Apache-2.0
 
     <label>3 · Compare AI inference performance</label>
     <p class="sub" style="margin:6px 0 14px;font-size:13px">
-      See how <strong>vLLM + APC</strong> (baseline) compares against
-      <strong>vLLM + APC + LMCache CacheBlend</strong> (optimized) on the same retrieved context —
+      See how <strong style="color:var(--text)">vLLM + APC</strong> (baseline) compares against
+      <strong style="color:var(--green2)">vLLM + APC + LMCache CacheBlend</strong> (optimized) on the same retrieved context —
       with live metrics for TTFT, throughput, and KV cache hit rate.
     </p>
     <div class="row" style="gap:12px;flex-wrap:wrap">
       <a href="/compare" target="_blank" style="text-decoration:none">
-        <button style="background:var(--g);color:#000;font-weight:700;font-size:15px;padding:12px 28px;border-radius:8px;border:none;cursor:pointer">
+        <button style="font-size:16px;padding:14px 32px;letter-spacing:.04em">
           ⚡ Open Side-by-Side Comparison ▸
         </button>
       </a>
     </div>
     <div class="hint" style="margin-top:10px">
-      Ask any question about your ingested documents and watch both AI paths respond simultaneously.
-      The Benchmark tab lets you run a full evaluation across multiple questions with p50/p95 latency stats.
+      Both paths respond simultaneously to the same question. Switch to the Benchmark tab to run a full batch
+      evaluation with p50/p95 latency stats across multiple questions — or load directly from the FinQA dataset.
     </div>
 
-    <label style="margin-top:24px">4 · Explore further</label>
-    <div class="hint" id="nbHint"></div>
+    <label style="margin-top:24px">4 · Run your own experiments</label>
+    <p class="sub" style="margin:6px 0 14px;font-size:13px">
+      The full GPU environment is pre-configured — Python, CUDA, vLLM, LMCache, and the NeMo Retriever SDK
+      are all installed. Open JupyterLab to run your own notebooks or explore the stack interactively.
+    </p>
+    <div class="row" style="gap:12px;flex-wrap:wrap">
+      <a href="https://jupyter-gh0lyurwe.apps.run.brev.nvidia.com" target="_blank" style="text-decoration:none">
+        <button class="secondary" style="font-size:15px;padding:12px 24px">
+          Open JupyterLab ▸
+        </button>
+      </a>
+    </div>
+    <div class="hint" style="margin-top:8px" id="nbHint"></div>
   </div>
 </div>
 
@@ -180,12 +191,7 @@ const $ = s => document.querySelector(s);
 let cfg = { notebook_url:"", corpus_size:6 };
 let t0 = 0, timer = null;
 
-fetch("/api/config").then(r=>r.json()).then(c=>{
-  cfg = c;
-  $("#nbHint").innerHTML = c.notebook_url
-    ? `Open the full walkthrough (single doc + a scaled dataset) in the notebook: <a href="${c.notebook_url}" target="_blank">nemo_retriever_quickstart.ipynb ▸</a>`
-    : `Open the full walkthrough in Jupyter: <code>deploy/brev/notebooks/nemo_retriever_quickstart.ipynb</code>`;
-});
+fetch("/api/config").then(r=>r.json()).then(c=>{ cfg = c; });
 
 // ?reset in URL → reset state and stay on step 1
 if (new URLSearchParams(location.search).has("reset")) {
